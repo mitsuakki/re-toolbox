@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  ctf-re:
+    build: .
+    image: ctf-re:latest
+    container_name: ctf-re
+    stdin_open: true
+    tty: true
+    environment:
+      - ENABLE_GHIDRA_HEADLESS_MCP=1
+      - ENABLE_GHIDRA_GUI=1      # set to 1 to also boot Xvfb+VNC for the GUI plugin path
+    ports:
+      - "8089:8089"   # ghidra-mcp headless HTTP
+      - "8080:8080"   # ghidra-mcp GUI plugin HTTP (when ENABLE_GHIDRA_GUI=1, started manually in-app)
+      - "6080:6080"   # noVNC web client (when ENABLE_GHIDRA_GUI=1)
+      - "5900:5900"   # raw VNC (when ENABLE_GHIDRA_GUI=1)
+    volumes:
+      - ./workspace:/workspace
+      - ghidra-projects:/home/ctf/.config/ghidra
+    cap_add:
+      - SYS_PTRACE     # needed for gdb/strace/AFL-related debugging inside the container
+    security_opt:
+      - seccomp:unconfined
+
+volumes:
+  ghidra-projects:
