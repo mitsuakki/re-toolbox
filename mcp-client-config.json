@@ -1,0 +1,27 @@
+{
+  "_comment": "Snippet to merge into your MCP client config (e.g. claude_desktop_config.json).",
+  "mcpServers": {
+    "radare2": {
+      "command": "docker",
+      "args": ["exec", "-i", "ctf-re", "r2pm", "-r", "r2mcp"]
+    },
+    "ghidra-headless": {
+      "_comment": "Talks to the headless ghidra-mcp HTTP server started by entrypoint.sh on :8089",
+      "command": "docker",
+      "args": [
+        "exec", "-i", "ctf-re",
+        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py",
+        "--ghidra-server", "http://127.0.0.1:8089/"
+      ]
+    },
+    "ghidra-gui": {
+      "_comment": "Talks to the in-GUI GhidraMCP plugin once you've opened a CodeBrowser via noVNC (port 6080) and started Tools > GhidraMCP > Start MCP Server (port 8080 by default)",
+      "command": "docker",
+      "args": [
+        "exec", "-i", "ctf-re",
+        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py",
+        "--ghidra-server", "http://127.0.0.1:8080/"
+      ]
+    }
+  }
+}
