@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Entrypoint for the CTF RE image.
-# Starts background services (Ghidra headless MCP server, Xvfb/VNC for GUI
-# Ghidra, etc.) according to env flags, then execs the requested command.
+
 set -euo pipefail
 
 GHIDRA_MCP_PORT="${GHIDRA_MCP_PORT:-8089}"

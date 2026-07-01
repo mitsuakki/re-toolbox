@@ -1,13 +1,5 @@
 #!/usr/bin/env bash
-# fuzz-init.sh — scaffold an AFL++ or honggfuzz campaign for a CTF binary.
-#
-# Usage:
-#   fuzz-init.sh afl   ./target [args...]      # builds corpus dirs + prints afl-fuzz cmd
-#   fuzz-init.sh hfuzz ./target [args...]
-#
-# For source-available challenges, prefer instrumented builds:
-#   afl:    afl-clang-fast / afl-clang-fast++ as CC/CXX before `make`
-#   hfuzz:  hfuzz-clang / hfuzz-clang++
+
 set -euo pipefail
 
 MODE="${1:?usage: fuzz-init.sh <afl|hfuzz> <target_binary> [args...]}"
