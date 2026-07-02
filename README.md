@@ -1,87 +1,153 @@
-# ctf-re-image
+# re-toolbox
 
-Image Docker tout-en-un pour le reverse engineering en CTF, avec radare2 et
-Ghidra branchés en MCP (utilisables directement par Claude ou tout autre
-client MCP), et BinDiff / angr / AFL++ / honggfuzz / Android (apktool, jadx,
-frida) installés en CLI.
+All-in-one Docker image for reverse engineering — radare2 + Ghidra wired up as
+MCP servers (usable by Claude Desktop or any MCP client), plus BinDiff, angr,
+AFL++, honggfuzz, and Android tools (apktool, jadx, frida).
 
-## Build & run
+**Headless only** — no GUI, no VNC. Everything runs in the terminal or through
+MCP.
+
+## Quick start
 
 ```bash
 docker compose build
 docker compose up -d
-docker exec -it ctf-re bash
+docker exec -it toolbox bash
 ```
 
-Le dossier `./workspace` sur l'hôte est monté dans `/workspace` du
-conteneur : dépose tes binaires de challenge là-dedans.
+Drop challenge binaries in `./workspace` — mounted at `/workspace` inside the
+container.
 
-## radare2 + r2mcp
+## Connect MCP tools to your LLM
 
-Déjà installé et prêt. Pour le brancher à Claude Desktop ou tout client MCP,
-copie l'entrée `radare2` de `configs/mcp-client-config.json` dans la config
-de ton client (le `docker exec -i ctf-re r2pm -r r2mcp` lance le serveur
-stdio à la demande, pas besoin de le démarrer manuellement).
+The image exposes MCP servers. Copy entries from
+[`configs/base.json`](configs/base.json) into your MCP client config file.
 
-En CLI direct dans le conteneur :
+### Claude Desktop
+
+Edit `claude_desktop_config.json` ([where to find it](https://docs.anthropic.com/en/docs/claude-desktop)):
+
+**radare2** — always ready, no server to start:
+
+```json
+{
+  "mcpServers": {
+    "radare2": {
+      "command": "docker",
+      "args": ["exec", "-i", "ctf-re", "r2pm", "-r", "r2mcp"]
+    }
+  }
+}
+```
+
+**Ghidra headless** — server auto-starts inside the container on port 8089
+(`ENABLE_GHIDRA_HEADLESS_MCP=1` by default, exposed in `docker-compose.yml`):
+
+```json
+{
+  "mcpServers": {
+    "ghidra-headless": {
+      "command": "docker",
+      "args": [
+        "exec", "-i", "ctf-re",
+        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py",
+        "--ghidra-server", "http://127.0.0.1:8089/"
+      ]
+    }
+  }
+}
+```
+
+**Ghidra GUI** (optional) — if you run Ghidra GUI on your host with the
+GhidraMCP plugin started on port 8080, use this entry to connect from an MCP
+client. The image does **not** include a GUI — this is for an external Ghidra
+instance:
+
+```json
+{
+  "mcpServers": {
+    "ghidra-gui": {
+      "command": "docker",
+      "args": [
+        "exec", "-i", "ctf-re",
+        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py",
+        "--ghidra-server", "http://host.docker.internal:8080/"
+      ]
+    }
+  }
+}
+```
+
+Restart your MCP client after editing the config.
+
+### Claude Code (CLI)
+
+Same format, different file. Create `.claude/mcp.json` in your project root
+(already done in this repo) or `~/.claude/mcp.json` for all projects:
+
+```json
+{
+  "mcpServers": {
+    "radare2": {
+      "command": "docker",
+      "args": ["exec", "-i", "ctf-re", "r2pm", "-r", "r2mcp"]
+    },
+    "ghidra-headless": {
+      "command": "docker",
+      "args": [
+        "exec", "-i", "ctf-re",
+        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py",
+        "--ghidra-server", "http://127.0.0.1:8089/"
+      ]
+    }
+  }
+}
+```
+
+Restart Claude Code after editing. MCP tools appear automatically.
+
+### Other MCP clients (Cline, Continue, Zed, etc.)
+
+Same `command` + `args` blocks work with any stdio MCP client.
+`docker exec -i ctf-re ...` spawns the bridge on demand — no long-running
+process to manage on the host.
+
+## Tools
+
+### radare2 + r2mcp
+
+Pre-installed. `r2ghidra` is also installed — `pdg` decompiles via Ghidra's
+SLEIGH engine directly in r2, no Ghidra needed.
+
 ```bash
-r2 -A /workspace/chall          # analyse classique
-r2pm -r r2mcp -t                # liste les tools MCP exposés
+r2 -A /workspace/chall          # open + analyze
+r2pm -r r2mcp -t                # list MCP tools exposed
 ```
 
-`r2ghidra` est aussi installé, donc la commande `pdg` (décompilation via le
-moteur Ghidra) fonctionne directement dans r2/r2mcp sans lancer Ghidra.
+### Ghidra headless
 
-## Ghidra — les deux modes
-
-### Headless (recommandé pour automatisation CTF)
-
-Démarré automatiquement par l'entrypoint (`ENABLE_GHIDRA_HEADLESS_MCP=1` par
-défaut) sur le port `8089`, exposé par compose. Branche l'entrée
-`ghidra-headless` du fichier de config MCP.
+Server auto-starts on port 8089. Exposes 200+ tools: project management, import,
+auto-analysis, decompilation, symbols, cross-references, patching.
 
 ```bash
 curl http://localhost:8089/check_connection
-docker cp ./mybin ctf-re:/data/mybin
-curl -X POST -d "file=/data/mybin" http://localhost:8089/load_program
+curl -X POST -d "file=/workspace/mybin" http://localhost:8089/load_program
 curl -X POST "http://localhost:8089/run_analysis?program=mybin"
 curl "http://localhost:8089/decompile_function?program=mybin&name=main"
 ```
 
-⚠️ Le build du jar `GhidraMCPHeadless.jar` se fait via Maven pendant le
-build de l'image. S'il échoue faute de réseau au build-time, reconstruis-le
-à la main dans le conteneur :
-```bash
-cd /opt/tools/ghidra-mcp && mvn -DskipTests -Dghidra.version=11.3.2 clean package
-```
+### BinDiff
 
-### GUI (plugin classique, via noVNC dans le navigateur)
+CLI only. Export `.BinExport` from Ghidra or IDA, then:
 
 ```bash
-docker compose down
-ENABLE_GHIDRA_GUI=1 docker compose up -d
-# puis ouvre http://localhost:6080/vnc.html dans ton navigateur
-```
-
-Dans la session VNC : lance `ghidraRun`, ouvre/importe ton binaire, puis
-`File > Configure > Configure All Plugins > GhidraMCP` pour activer le
-plugin, et `Tools > GhidraMCP > Start MCP Server`. Branche ensuite l'entrée
-`ghidra-gui` de la config MCP (port 8080 par défaut, configurable dans le
-plugin).
-
-## BinDiff
-
-CLI uniquement, pas de MCP officiel. Workflow classique :
-```bash
-# Exporte chaque binaire en .BinExport depuis Ghidra (script BinExportHeadless)
-# ou IDA, puis :
 bindiff old.BinExport new.BinExport
 ```
 
-## angr
+### angr + Python RE stack
 
-Installé avec pwntools, ropper, capstone, unicorn, z3-solver, lief, r2pipe.
-Un wrapper CLI rapide est fourni mais le travail de Xavier peut-être utilisé :
+Pre-installed: angr, pwntools, ropper, capstone, unicorn, keystone, z3, lief,
+r2pipe.
 
 ```bash
 angr-solve.py info ./chall
@@ -89,22 +155,19 @@ angr-solve.py find ./chall --stdin-len 32 --find "Correct" --avoid "Wrong"
 angr-solve.py find ./chall --find-addr 0x401300 --avoid-addr 0x401234
 ```
 
-Pour des scripts angr custom, l'environnement Python est directement
-utilisable (`python3 -c "import angr; ..."`).
-
-## Fuzzing (AFL++ / honggfuzz)
+### Fuzzing (AFL++ / honggfuzz)
 
 ```bash
-fuzz-init.sh afl ./chall            # scaffolde un dossier de corpus + affiche la commande
+fuzz-init.sh afl ./chall
 afl-fuzz -i fuzz-chall-afl/in -o fuzz-chall-afl/out -- ./chall @@
 
 fuzz-init.sh hfuzz ./chall
 honggfuzz -i fuzz-chall-hfuzz/in -o fuzz-chall-hfuzz/out -- ./chall ___FILE___
 ```
 
-Pour binaire fermé sans recompilation : `afl-fuzz -Q ...` (mode QEMU).
+Closed-source binaries without recompilation: `afl-fuzz -Q ...` (QEMU mode).
 
-## Android
+### Android RE
 
 ```bash
 apktool d app.apk -o app_decoded
@@ -114,9 +177,8 @@ frida -U -f com.example.app -l hook.js --no-pause
 objection -g com.example.app explore
 ```
 
-## Sécurité du conteneur
+## Security
 
-Le compose ajoute `CAP_SYS_PTRACE` et désactive seccomp (`unconfined`) car
-gdb/strace/AFL en a besoin pour attacher aux processus et tracer les
-syscalls. Garde ce conteneur dans un environnement isolé / un VM dédié si tu
-fais tourner des binaires malveillants réels (pas juste des crackmes CTF).
+Compose adds `SYS_PTRACE` and disables seccomp (`unconfined`) — required by
+gdb, strace, and AFL. Run this container in an isolated VM when analyzing
+untrusted binaries.

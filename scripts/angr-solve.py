@@ -1,18 +1,5 @@
 #!/usr/bin/env python3
-"""
-angr-solve : quick-start CLI for common CTF reverse-engineering tasks.
 
-Usage examples
---------------
-  # Symbolic-execute to find a path that prints a "win"/"correct" string
-  angr-solve.py find ./chall --avoid "Wrong" --find "Correct" --stdin-len 32
-
-  # Same, but the win condition is reaching an address
-  angr-solve.py find ./chall --avoid-addr 0x401234 --find-addr 0x401300
-
-  # Just explore and dump basic CFG / function info, no symbolic solving
-  angr-solve.py info ./chall
-"""
 import argparse
 import sys
 
