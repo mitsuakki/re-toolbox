@@ -3,31 +3,21 @@
   "mcpServers": {
     "radare2": {
       "command": "docker",
-      "args": ["exec", "-i", "ctf-re", "r2pm", "-r", "r2mcp"]
+      "args": ["exec", "-i", "toolbox", "r2pm", "-r", "r2mcp"]
     },
     "ghidra-headless": {
       "_comment": "Talks to the headless ghidra-mcp HTTP server started by entrypoint.sh on :8089",
       "command": "docker",
       "args": [
-        "exec", "-i", "ctf-re",
-        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py",
-        "--ghidra-server", "http://127.0.0.1:8089/"
-      ]
-    },
-    "ghidra-gui": {
-      "_comment": "Connect to Ghidra GUI running on your host with the GhidraMCP plugin started (Tools > GhidraMCP > Start MCP Server, default port 8080)",
-      "command": "docker",
-      "args": [
-        "exec", "-i", "ctf-re",
-        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py",
-        "--ghidra-server", "http://host.docker.internal:8080/"
+        "exec", "-i", "-e", "GHIDRA_MCP_URL=http://127.0.0.1:8089", "toolbox",
+        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py"
       ]
     },
     "shell": {
       "_comment": "Generic shell command execution inside the container — gives access to all CLI tools",
       "command": "docker",
       "args": [
-        "exec", "-i", "ctf-re",
+        "exec", "-i", "toolbox",
         "python3", "/opt/tools/scripts/mcp/shell-mcp.py"
       ]
     },
@@ -35,7 +25,7 @@
       "_comment": "Python REPL with angr, pwntools, z3, lief, capstone pre-loaded",
       "command": "docker",
       "args": [
-        "exec", "-i", "ctf-re",
+        "exec", "-i", "toolbox",
         "python3", "/opt/tools/scripts/mcp/python-mcp.py"
       ]
     },
@@ -43,7 +33,7 @@
       "_comment": "Fuzzing harness — scaffold AFL++ or honggfuzz sessions, run smoke tests, triage crashes",
       "command": "docker",
       "args": [
-        "exec", "-i", "ctf-re",
+        "exec", "-i", "toolbox",
         "python3", "/opt/tools/scripts/mcp/fuzz-mcp.py"
       ]
     },
@@ -51,7 +41,7 @@
       "_comment": "Symbolic analysis — CFG overview, symbolic path finding, function listing",
       "command": "docker",
       "args": [
-        "exec", "-i", "ctf-re",
+        "exec", "-i", "toolbox",
         "python3", "/opt/tools/scripts/mcp/angr-mcp.py"
       ]
     }

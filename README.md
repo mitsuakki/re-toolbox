@@ -34,7 +34,7 @@ Edit `claude_desktop_config.json` ([where to find it](https://docs.anthropic.com
   "mcpServers": {
     "radare2": {
       "command": "docker",
-      "args": ["exec", "-i", "ctf-re", "r2pm", "-r", "r2mcp"]
+      "args": ["exec", "-i", "toolbox", "r2pm", "-r", "r2mcp"]
     }
   }
 }
@@ -49,7 +49,7 @@ Edit `claude_desktop_config.json` ([where to find it](https://docs.anthropic.com
     "ghidra-headless": {
       "command": "docker",
       "args": [
-        "exec", "-i", "ctf-re",
+        "exec", "-i", "toolbox",
         "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py",
         "--ghidra-server", "http://127.0.0.1:8089/"
       ]
@@ -69,7 +69,7 @@ instance:
     "ghidra-gui": {
       "command": "docker",
       "args": [
-        "exec", "-i", "ctf-re",
+        "exec", "-i", "toolbox",
         "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py",
         "--ghidra-server", "http://host.docker.internal:8080/"
       ]
@@ -90,12 +90,12 @@ Same format, different file. Create `.claude/mcp.json` in your project root
   "mcpServers": {
     "radare2": {
       "command": "docker",
-      "args": ["exec", "-i", "ctf-re", "r2pm", "-r", "r2mcp"]
+      "args": ["exec", "-i", "toolbox", "r2pm", "-r", "r2mcp"]
     },
     "ghidra-headless": {
       "command": "docker",
       "args": [
-        "exec", "-i", "ctf-re",
+        "exec", "-i", "toolbox",
         "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py",
         "--ghidra-server", "http://127.0.0.1:8089/"
       ]
@@ -109,7 +109,7 @@ Restart Claude Code after editing. MCP tools appear automatically.
 ### Other MCP clients (Cline, Continue, Zed, etc.)
 
 Same `command` + `args` blocks work with any stdio MCP client.
-`docker exec -i ctf-re ...` spawns the bridge on demand — no long-running
+`docker exec -i toolbox ...` spawns the bridge on demand — no long-running
 process to manage on the host.
 
 ## Tools

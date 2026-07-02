@@ -89,15 +89,17 @@ RUN --mount=type=cache,target=/root/.m2/repository \
     && sed -i "s|<ghidra.version>[^<]*</ghidra.version>|<ghidra.version>${GHIDRA_ACTUAL_VERSION}</ghidra.version>|" pom.xml \
     && PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m tools.setup ensure-prereqs --ghidra-path "${GHIDRA_INSTALL_DIR}" \
     && mvn -q -DskipTests -Pheadless clean package \
-    && HEADLESS_JAR="$(find target -maxdepth 1 -iname '*Headless*.jar' | head -n1)" \
+    && HEADLESS_JAR="$(find target/archive-tmp -maxdepth 1 -iname '*.jar' 2>/dev/null | head -n1)" \
+    && if [ -z "${HEADLESS_JAR}" ]; then \
+         HEADLESS_JAR="$(find target -maxdepth 1 -iname '*Headless*.jar' 2>/dev/null | head -n1)"; \
+       fi \
+    && if [ -z "${HEADLESS_JAR}" ]; then \
+         echo "WARN: no jar in archive-tmp or target, falling back to largest jar" >&2 \
+         && HEADLESS_JAR="$(find target -maxdepth 1 -iname '*.jar' -printf '%s %p\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2-)"; \
+       fi \
     && mkdir -p docker \
-    && if [ -n "${HEADLESS_JAR}" ]; then \
-         cp "${HEADLESS_JAR}" docker/GhidraMCPHeadless.jar; \
-       else \
-         echo "WARN: no *Headless*.jar found, falling back to largest jar" >&2 \
-         && cp "$(find target -maxdepth 1 -iname '*.jar' -printf '%s %p\n' | sort -rn | head -n1 | cut -d' ' -f2-)" \
-            docker/GhidraMCPHeadless.jar; \
-       fi
+    && echo "==> Deploying ${HEADLESS_JAR} -> docker/GhidraMCPHeadless.jar" \
+    && cp "${HEADLESS_JAR}" docker/GhidraMCPHeadless.jar
 
 # BinDiff CLI
 ARG BINDIFF_DEB_URL=https://github.com/google/bindiff/releases/download/v8/bindiff_8_amd64.deb
