@@ -6,20 +6,14 @@ Gives Claude access to all CLI tools: strings, objdump, angr-solve.py,
 fuzz-init.sh, apktool, jadx, bindiff, frida, afl-fuzz, honggfuzz, etc.
 """
 
-import asyncio
 import json
 import subprocess
-import sys
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server import FastMCP
+mcp = FastMCP("shell-mcp")
 
-
-server = Server("shell-mcp")
-
-
-@server.tool()
-async def shell(cmd: str, cwd: str = "/workspace", timeout: int = 60) -> str:
+@mcp.tool()
+def shell(cmd: str, cwd: str = "/workspace", timeout: int = 60) -> str:
     """Run a shell command inside the container.
 
     Args:
@@ -31,30 +25,28 @@ async def shell(cmd: str, cwd: str = "/workspace", timeout: int = 60) -> str:
         JSON with stdout, stderr, and returncode.
     """
     try:
-        proc = await asyncio.create_subprocess_shell(
+        result = subprocess.run(
             cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            shell=True,
+            capture_output=True,
+            text=True,
             cwd=cwd,
-        )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout
+            timeout=timeout,
         )
         return json.dumps({
-            "stdout": stdout.decode("utf-8", errors="replace")[:50000],
-            "stderr": stderr.decode("utf-8", errors="replace")[:50000],
-            "returncode": proc.returncode,
+            "stdout": result.stdout[:50000],
+            "stderr": result.stderr[:50000],
+            "returncode": result.returncode,
         })
-    except asyncio.TimeoutError:
+    except subprocess.TimeoutExpired:
         return json.dumps({"error": f"Command timed out after {timeout}s", "returncode": -1})
     except Exception as e:
         return json.dumps({"error": str(e), "returncode": -1})
 
 
-async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+def main():
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

@@ -1,24 +1,12 @@
 #!/usr/bin/env python3
-"""MCP stdio server — symbolic/concolic analysis via angr.
 
-Exposes angr-solve.py capabilities as structured MCP tools:
-- binary_info: CFG + function overview
-- symbolic_find: find a path to a success state
-"""
-
-import asyncio
 import json
-import sys
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server import FastMCP
+mcp = FastMCP("angr-mcp")
 
-
-server = Server("angr-mcp")
-
-
-@server.tool()
-async def binary_info(binary: str) -> str:
+@mcp.tool()
+def binary_info(binary: str) -> str:
     """Analyze a binary with angr — architecture, entry point, function list.
 
     Args:
@@ -38,8 +26,8 @@ async def binary_info(binary: str) -> str:
     })
 
 
-@server.tool()
-async def symbolic_find(
+@mcp.tool()
+def symbolic_find(
     binary: str,
     find: str = "",
     avoid: str = "",
@@ -98,7 +86,6 @@ async def symbolic_find(
         }
         if stdin_len:
             solution = found.solver.eval(sym_stdin, cast_to=bytes)
-            # filter to printable
             result["stdin"] = "".join(
                 chr(b) if 0x20 <= b <= 0x7E else f"\\x{b:02x}"
                 for b in solution
@@ -113,8 +100,8 @@ async def symbolic_find(
         })
 
 
-@server.tool()
-async def list_functions(binary: str, limit: int = 200) -> str:
+@mcp.tool()
+def list_functions(binary: str, limit: int = 200) -> str:
     """List all functions found by angr's CFG analysis.
 
     Args:
@@ -134,10 +121,9 @@ async def list_functions(binary: str, limit: int = 200) -> str:
     })
 
 
-async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+def main():
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

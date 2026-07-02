@@ -1,24 +1,15 @@
 #!/usr/bin/env python3
-"""MCP stdio server — fuzzing harness setup (AFL++ / honggfuzz).
 
-Wraps fuzz-init.sh with structured MCP tools.
-"""
-
-import asyncio
 import json
 import subprocess
-import sys
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
+from mcp.server import FastMCP
+mcp = FastMCP("fuzz-mcp")
 
-
-server = Server("fuzz-mcp")
 FUZZ_INIT = "/opt/tools/scripts/fuzz-init.sh"
 
-
-@server.tool()
-async def fuzz_init(
+@mcp.tool()
+def fuzz_init(
     mode: str,
     target: str,
     args: str = "",
@@ -39,28 +30,29 @@ async def fuzz_init(
         return json.dumps({"error": f"Unknown mode '{mode}'. Use 'afl' or 'hfuzz'.", "returncode": 1})
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            FUZZ_INIT, mode, target, *args.split() if args else [],
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        cmd = [FUZZ_INIT, mode, target]
+        if args:
+            cmd.extend(args.split())
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
             cwd=cwd,
-        )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=30
+            timeout=30,
         )
         return json.dumps({
-            "stdout": stdout.decode("utf-8", errors="replace"),
-            "stderr": stderr.decode("utf-8", errors="replace"),
-            "returncode": proc.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "returncode": result.returncode,
         })
-    except asyncio.TimeoutError:
+    except subprocess.TimeoutExpired:
         return json.dumps({"error": "Command timed out after 30s", "returncode": -1})
     except Exception as e:
         return json.dumps({"error": str(e), "returncode": -1})
 
 
-@server.tool()
-async def fuzz_run(
+@mcp.tool()
+def fuzz_run(
     mode: str,
     target: str,
     args: str = "",
@@ -76,31 +68,37 @@ async def fuzz_run(
         cwd: Working directory
         timeout: Max run time in seconds (default 30)
     """
-    workdir = f"{cwd}/fuzz-{target.split('/')[-1]}-{mode}"
+    try:
+        workdir = f"{cwd}/fuzz-{target.split('/')[-1]}-{mode}"
 
-    if mode == "afl":
-        cmd = f"timeout {timeout} afl-fuzz -i {workdir}/in -o {workdir}/out -- {target} {args}"
-    else:
-        cmd = f"timeout {timeout} honggfuzz -i {workdir}/in -o {workdir}/out -- {target} {args} ___FILE___"
+        if mode == "afl":
+            cmd = f"timeout {timeout} afl-fuzz -i {workdir}/in -o {workdir}/out -- {target} {args}"
+        elif mode == "hfuzz":
+            cmd = f"timeout {timeout} honggfuzz -i {workdir}/in -o {workdir}/out -- {target} {args} ___FILE___"
+        else:
+            return json.dumps({"error": f"Unknown mode '{mode}'. Use 'afl' or 'hfuzz'.", "returncode": 1})
 
-    proc = await asyncio.create_subprocess_shell(
-        cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-    )
-    stdout, stderr = await asyncio.wait_for(
-        proc.communicate(), timeout=timeout + 5
-    )
-    return json.dumps({
-        "stdout": stdout.decode("utf-8", errors="replace")[-10000:],
-        "stderr": stderr.decode("utf-8", errors="replace")[-10000:],
-        "returncode": proc.returncode,
-    })
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=timeout + 5,
+        )
+        return json.dumps({
+            "stdout": result.stdout[-10000:],
+            "stderr": result.stderr[-10000:],
+            "returncode": result.returncode,
+        })
+    except subprocess.TimeoutExpired:
+        return json.dumps({"error": f"Command timed out after {timeout}s", "returncode": -1})
+    except Exception as e:
+        return json.dumps({"error": str(e), "returncode": -1})
 
 
-@server.tool()
-async def fuzz_triage(mode: str, target: str, crash_file: str, cwd: str = "/workspace") -> str:
+@mcp.tool()
+def fuzz_triage(mode: str, target: str, crash_file: str, cwd: str = "/workspace") -> str:
     """Minimize a crash file found by the fuzzer (AFL only).
 
     Args:
@@ -112,26 +110,31 @@ async def fuzz_triage(mode: str, target: str, crash_file: str, cwd: str = "/work
     if mode != "afl":
         return json.dumps({"error": "Triage only supported for AFL++ mode", "returncode": 1})
 
-    minimized = f"{crash_file}.min"
-    proc = await asyncio.create_subprocess_shell(
-        f"afl-tmin -i {crash_file} -o {minimized} -- {target}",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=cwd,
-    )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-    return json.dumps({
-        "stdout": stdout.decode("utf-8", errors="replace"),
-        "stderr": stderr.decode("utf-8", errors="replace"),
-        "minimized": minimized if proc.returncode == 0 else None,
-        "returncode": proc.returncode,
-    })
+    try:
+        minimized = f"{crash_file}.min"
+        result = subprocess.run(
+            f"afl-tmin -i {crash_file} -o {minimized} -- {target}",
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=60,
+        )
+        return json.dumps({
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "minimized": minimized if result.returncode == 0 else None,
+            "returncode": result.returncode,
+        })
+    except subprocess.TimeoutExpired:
+        return json.dumps({"error": "Triage timed out after 60s", "returncode": -1})
+    except Exception as e:
+        return json.dumps({"error": str(e), "returncode": -1})
 
 
-async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+def main():
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

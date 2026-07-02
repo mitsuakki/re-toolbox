@@ -1,31 +1,26 @@
 #!/usr/bin/env python3
-"""MCP stdio server — execute Python code with all RE libraries pre-imported.
 
-Exposes one tool: `python` — runs Python code with angr, pwntools, claripy,
-z3, lief, capstone, unicorn, etc. already available.
-"""
-
-import asyncio
 import json
 import sys
 import io
 import traceback
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-
-
-server = Server("python-mcp")
+from mcp.server import FastMCP
+mcp = FastMCP("python-mcp")
 
 PRELUDE = """
-import angr, claripy, pwntools
+import os
+# pwntools tries curses.setupterm() which fails on piped stdio (no TTY in MCP).
+# Suppress terminal detection before importing pwn.
+os.environ.setdefault("PWNLIB_NOTERM", "1")
+import angr, claripy
 import z3, lief, capstone
 from pwn import *
 """
 
 
-@server.tool()
-async def python(code: str, timeout: int = 120) -> str:
+@mcp.tool()
+def python(code: str, timeout: int = 120) -> str:
     """Execute Python code with RE libraries pre-loaded (angr, pwntools, z3, lief, capstone).
 
     Args:
@@ -35,38 +30,31 @@ async def python(code: str, timeout: int = 120) -> str:
     Returns:
         Captured stdout or error traceback.
     """
+    import signal
+
     namespace = {}
     full_code = PRELUDE + "\n" + code
     buf = io.StringIO()
 
-    async def run():
-        exec(full_code, namespace)
-
+    old_stdout = sys.stdout
+    sys.stdout = buf
     try:
-        old_stdout = sys.stdout
-        sys.stdout = buf
-        try:
-            await asyncio.wait_for(asyncio.to_thread(lambda: exec(full_code, namespace)), timeout=timeout)
-        finally:
-            sys.stdout = old_stdout
+        exec(full_code, namespace)
         output = buf.getvalue()
         return json.dumps({
             "stdout": output[:50000] if output else "(no output)",
             "returncode": 0,
         })
-    except asyncio.TimeoutError:
-        sys.stdout = old_stdout
-        return json.dumps({"error": f"Code timed out after {timeout}s", "returncode": -1})
     except Exception:
-        sys.stdout = old_stdout
         tb = traceback.format_exc()
         return json.dumps({"error": tb[:50000], "returncode": 1})
+    finally:
+        sys.stdout = old_stdout
 
 
-async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+def main():
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
