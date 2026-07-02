@@ -57,5 +57,5 @@ jobs:
                 cache-from: type=gha
                 cache-to: type=gha,mode=max
                 build-args: |
-                    GHIDRA_VERSION=11.3.2
-                    GHIDRA_DATE=20250415
+                    GHIDRA_VERSION=12.1.2
+                    GHIDRA_DATE=20260605
