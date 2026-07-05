@@ -9,7 +9,7 @@ log() { echo "[entrypoint] $*" >&2; }
 # --- Ghidra headless MCP server ---------------------------------------------
 if [[ "${ENABLE_GHIDRA_HEADLESS_MCP:-1}" == "1" ]]; then
   if [[ -f /opt/tools/ghidra-mcp/docker/GhidraMCPHeadless.jar ]]; then
-    log "Starting Ghidra headless MCP server on 127.0.0.1:${GHIDRA_MCP_PORT}"
+    log "Starting Ghidra headless MCP server on 0.0.0.0:${GHIDRA_MCP_PORT}"
 
     # Build classpath: jar + all Ghidra runtime jars
     GHIDRA_HOME="${GHIDRA_INSTALL_DIR:-/opt/tools/ghidra}"
@@ -24,7 +24,7 @@ if [[ "${ENABLE_GHIDRA_HEADLESS_MCP:-1}" == "1" ]]; then
       -Dghidra.home="${GHIDRA_HOME}" \
       -classpath "${CP}" \
       com.xebyte.headless.GhidraMCPHeadlessServer \
-      --bind 127.0.0.1 --port "${GHIDRA_MCP_PORT}" \
+      --bind 0.0.0.0 --port "${GHIDRA_MCP_PORT}" \
       > /tmp/ghidra-mcp-headless.log 2>&1 &
   else
     log "ghidra-mcp headless jar not found (build step may have been skipped or failed at image build time)."
