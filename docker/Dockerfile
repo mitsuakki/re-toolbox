@@ -1,68 +1,133 @@
 # syntax=docker/dockerfile:1
-FROM ubuntu:24.04
+
+# ============================================================================
+# Stage 0: base — runtime OS packages only (no build toolchain)
+# Used by the final stage. Keeps image lean — no gcc/cmake/maven bloat.
+# ============================================================================
+FROM ubuntu:24.04 AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
 ENV LANG=C.UTF-8 \
     PYTHONUNBUFFERED=1 \
     HOME=/home/ctf
 
-# System packages (single apt layer, cache-mounted)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-        build-essential git curl wget ca-certificates gnupg sudo \
+        git curl wget ca-certificates gnupg sudo \
         python3 python3-pip python3-venv pipx \
-        cmake meson ninja-build pkg-config \
         file binutils unzip xz-utils zlib1g-dev libssl-dev \
-        openjdk-21-jdk-headless maven \
+        openjdk-21-jdk-headless \
         gdb gdb-multiarch lldb \
         nasm patchelf elfutils \
         strace ltrace tmux vim less jq \
         libc6-dbg libcapstone-dev \
         zip p7zip-full \
-        clang lld llvm llvm-dev libtool-bin automake autoconf \
+        clang lld llvm \
         libglib2.0-dev libpixman-1-dev \
         libunwind-dev binutils-dev libblocksruntime-dev \
         libqt5widgets5 libc6-i386 \
+        gcc g++ make \
     && rm -rf /var/lib/apt/lists/* && mkdir -p /var/lib/apt/lists/partial
 
-# Non-root user
 RUN useradd -m -s /bin/bash -G sudo ctf \
     && echo "ctf ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers \
     && mkdir -p /workspace /opt/tools \
     && chown -R ctf:ctf /workspace /opt/tools
 
-# Python RE/exploit/frida stack (single pip layer, cache-mounted)
+# BinDiff — small .deb, rarely changes, runtime-only (no build deps needed)
+ARG BINDIFF_DEB_URL=https://github.com/google/bindiff/releases/download/v8/bindiff_8_amd64.deb
+RUN wget -q -O /tmp/bindiff.deb "${BINDIFF_DEB_URL}" \
+    && apt-get update && apt-get install -y --no-install-recommends /tmp/bindiff.deb \
+    && rm -f /tmp/bindiff.deb \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# ============================================================================
+# Stage 1: base-build — extends base with build toolchain
+# Used by all builder stages. Discarded after build — never ships.
+# ============================================================================
+FROM base AS base-build
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake meson ninja-build pkg-config \
+        maven libtool-bin automake autoconf llvm-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# ============================================================================
+# Stage 2: python — angr, pwntools, frida, MCP stack
+# ============================================================================
+FROM base-build AS python
+
+# Versions pinned for reproducible builds.
+# Bump these ARGs to upgrade.
+# NOTE: capstone, unicorn, claripy, pyelftools, z3-solver are left unpinned —
+# angr pins exact versions of its own transitive deps. Let pip resolve them.
+ARG ANGR_VERSION=9.2.194
+ARG PWNTOOLS_VERSION=4.15.0
+ARG FRIDA_VERSION=14.9.0
+ARG LIEF_VERSION=0.17.6
+ARG OBJECTION_VERSION=1.12.5
+ARG KEYSTONE_VERSION=0.9.2
+ARG R2PIPE_VERSION=1.9.0
+ARG ROPPER_VERSION=1.13.10
+ARG ROPGADGET_VERSION=7.6
+ARG MCP_VERSION=1.13.0
+
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --break-system-packages \
-        angr claripy pwntools ropper ropgadget capstone unicorn keystone-engine \
-        pyelftools z3-solver r2pipe lief \
-        frida-tools objection mcp
+        angr==${ANGR_VERSION} \
+        claripy \
+        pwntools==${PWNTOOLS_VERSION} \
+        ropper==${ROPPER_VERSION} \
+        ropgadget==${ROPGADGET_VERSION} \
+        capstone \
+        unicorn \
+        keystone-engine==${KEYSTONE_VERSION} \
+        pyelftools \
+        z3-solver \
+        r2pipe==${R2PIPE_VERSION} \
+        lief==${LIEF_VERSION} \
+        frida-tools==${FRIDA_VERSION} \
+        objection==${OBJECTION_VERSION} \
+        mcp==${MCP_VERSION} \
+        'pycparser==2.22'
 
-# radare2 from source + r2pm plugins
-RUN git clone --depth 1 https://github.com/radareorg/radare2 /opt/tools/radare2 \
-    && cd /opt/tools/radare2 \
-    && sys/install.sh
 
+# ============================================================================
+# Stage 3: r2-ghidra — radare2 + r2pm plugins, Ghidra headless, ghidra-mcp
+# ============================================================================
+FROM base-build AS r2-ghidra
+
+# -- radare2 from source, installed to /opt/tools/radare2 -------------------
+ARG R2_VERSION=6.0.8
+
+RUN git clone --depth 1 --branch ${R2_VERSION} \
+        https://github.com/radareorg/radare2 /opt/tools/radare2-src \
+    && cd /opt/tools/radare2-src \
+    && PREFIX=/opt/tools/radare2 sys/install.sh
+# NOTE: keep radare2-src — sys/install.sh symlinks binaries/libs to it.
+# Deleting it breaks radare2 + r2pm. Extra ~200MB acceptable.
+
+# r2pm plugins (r2mcp, r2ghidra, r2ghidra-sleigh).
+# Run as ctf so any plugin files written to ~/.local are captured.
+ARG MCP_VERSION=1.13.0
+ENV PATH="/opt/tools/radare2/bin:${PATH}" \
+    PKG_CONFIG_PATH="/opt/tools/radare2/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+RUN pip3 install --break-system-packages mcp==${MCP_VERSION} \
+    && chown -R ctf:ctf /opt/tools/radare2
 USER ctf
-WORKDIR /home/ctf
+# r2mcp needs a source patch for radare2 >=6.0 (r_core_call_str_at -> r_core_cmd_str_at).
+# r2pm's own make will fail on the ld error; we ignore that, patch, rebuild manually.
 RUN r2pm -U \
-    && r2pm -ci r2mcp r2ghidra r2ghidra-sleigh \
-    || echo "WARN: one or more r2pm plugins failed to install; r2mcp may still work" >&2
+    && r2pm -ci r2mcp r2ghidra r2ghidra-sleigh || true \
+    && cd /home/ctf/.local/share/radare2/r2pm/git/r2mcp/src \
+    && sed -i 's/r_core_call_str_at/r_core_cmd_str_at/g' tools.c \
+    && make clean && make && make user-install
 USER root
 
-# AFL++ fuzzer
-RUN git clone --depth 1 https://github.com/AFLplusplus/AFLplusplus /opt/tools/AFLplusplus \
-    && cd /opt/tools/AFLplusplus \
-    && make distrib -j"$(nproc)" \
-    && make install
-
-# honggfuzz fuzzer
-RUN git clone --depth 1 https://github.com/google/honggfuzz /opt/tools/honggfuzz \
-    && cd /opt/tools/honggfuzz \
-    && make -j"$(nproc)" \
-    && make install
-
-# Ghidra headless
+# -- Ghidra headless --------------------------------------------------------
 ARG GHIDRA_VERSION=12.1.2
 ARG GHIDRA_DATE=20260605
 ARG GHIDRA_URL=https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_DATE}.zip
@@ -73,61 +138,126 @@ RUN wget -q -O /tmp/ghidra.zip "${GHIDRA_URL}" \
     && rm /tmp/ghidra.zip \
     && chmod +x /opt/tools/ghidra/support/analyzeHeadless
 
-ENV GHIDRA_INSTALL_DIR=/opt/tools/ghidra
-ENV PATH="${GHIDRA_INSTALL_DIR}:${GHIDRA_INSTALL_DIR}/support:${PATH}"
+# -- ghidra-mcp headless server ---------------------------------------------
+ARG GHIDRA_MCP_VERSION=v5.13.1
 
-# ghidra-mcp headless server
-# Dynamically extracts the actual Ghidra version from the installed copy
-# so the Maven build always matches — no more version-mismatch silent failures.
 RUN --mount=type=cache,target=/root/.m2/repository \
-    git clone --depth 1 https://github.com/bethington/ghidra-mcp /opt/tools/ghidra-mcp \
+    git clone --depth 1 --branch ${GHIDRA_MCP_VERSION} \
+        https://github.com/bethington/ghidra-mcp /opt/tools/ghidra-mcp \
     && cd /opt/tools/ghidra-mcp \
     && pip3 install --break-system-packages --no-cache-dir -r requirements.txt \
     && GHIDRA_ACTUAL_VERSION="$(grep '^application\.version=' \
-         "${GHIDRA_INSTALL_DIR}/Ghidra/application.properties" | cut -d= -f2)" \
+         /opt/tools/ghidra/Ghidra/application.properties | cut -d= -f2)" \
     && echo "==> Patching pom.xml ghidra.version to ${GHIDRA_ACTUAL_VERSION}" \
     && sed -i "s|<ghidra.version>[^<]*</ghidra.version>|<ghidra.version>${GHIDRA_ACTUAL_VERSION}</ghidra.version>|" pom.xml \
-    && PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m tools.setup ensure-prereqs --ghidra-path "${GHIDRA_INSTALL_DIR}" \
+    && PIP_BREAK_SYSTEM_PACKAGES=1 python3 -m tools.setup ensure-prereqs --ghidra-path /opt/tools/ghidra \
     && mvn -q -DskipTests -Pheadless clean package \
-    && HEADLESS_JAR="$(find target -maxdepth 1 -iname '*Headless*.jar' | head -n1)" \
+    && HEADLESS_JAR="$(find target/archive-tmp -maxdepth 1 -iname '*.jar' 2>/dev/null | head -n1)" \
+    && if [ -z "${HEADLESS_JAR}" ]; then \
+         HEADLESS_JAR="$(find target -maxdepth 1 -iname '*Headless*.jar' 2>/dev/null | head -n1)"; \
+       fi \
+    && if [ -z "${HEADLESS_JAR}" ]; then \
+         echo "WARN: no jar in archive-tmp or target, falling back to largest jar" >&2 \
+         && HEADLESS_JAR="$(find target -maxdepth 1 -iname '*.jar' -printf '%s %p\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2-)"; \
+       fi \
     && mkdir -p docker \
-    && if [ -n "${HEADLESS_JAR}" ]; then \
-         cp "${HEADLESS_JAR}" docker/GhidraMCPHeadless.jar; \
-       else \
-         echo "WARN: no *Headless*.jar found, falling back to largest jar" >&2 \
-         && cp "$(find target -maxdepth 1 -iname '*.jar' -printf '%s %p\n' | sort -rn | head -n1 | cut -d' ' -f2-)" \
-            docker/GhidraMCPHeadless.jar; \
-       fi
+    && echo "==> Deploying ${HEADLESS_JAR} -> docker/GhidraMCPHeadless.jar" \
+    && cp "${HEADLESS_JAR}" docker/GhidraMCPHeadless.jar
 
-# BinDiff CLI
-ARG BINDIFF_DEB_URL=https://github.com/google/bindiff/releases/download/v8/bindiff_8_amd64.deb
-RUN wget -q -O /tmp/bindiff.deb "${BINDIFF_DEB_URL}" \
-    && apt-get update && apt-get install -y --no-install-recommends /tmp/bindiff.deb \
-    && rm -f /tmp/bindiff.deb \
-    && rm -rf /var/lib/apt/lists/*
 
-# Android RE tools (platform-tools + apktool + jadx)
+# ============================================================================
+# Stage 4: fuzzing — AFL++, honggfuzz
+# ============================================================================
+FROM base-build AS fuzzing
+
+# -- AFL++ ------------------------------------------------------------------
+ARG AFLPLUSPLUS_VERSION=v5.00c
+
+RUN git clone --depth 1 --branch ${AFLPLUSPLUS_VERSION} \
+        https://github.com/AFLplusplus/AFLplusplus /opt/tools/AFLplusplus-src \
+    && cd /opt/tools/AFLplusplus-src \
+    && make distrib -j"$(nproc)" \
+    && PREFIX=/opt/tools/fuzzing make install \
+    && rm -rf /opt/tools/AFLplusplus-src
+
+# -- honggfuzz --------------------------------------------------------------
+ARG HONGGFUZZ_VERSION=2.6
+
+RUN git clone --depth 1 --branch ${HONGGFUZZ_VERSION} \
+        https://github.com/google/honggfuzz /opt/tools/honggfuzz-src \
+    && cd /opt/tools/honggfuzz-src \
+    && make -j"$(nproc)"
+RUN cd /opt/tools/honggfuzz-src \
+    && PREFIX=/opt/tools/fuzzing make install \
+    && rm -rf /opt/tools/honggfuzz-src
+
+
+# ============================================================================
+# Stage 5: android — platform-tools, apktool, jadx
+# ============================================================================
+FROM base-build AS android
+
+ARG PLATFORM_TOOLS_VERSION=37.0.0
 ARG APKTOOL_VERSION=2.10.0
 ARG JADX_VER=1.5.1
 
 RUN wget -q -O /tmp/platform-tools.zip \
-        https://dl.google.com/android/repository/platform-tools-latest-linux.zip \
+        "https://dl.google.com/android/repository/platform-tools_r${PLATFORM_TOOLS_VERSION}-linux.zip" \
     && unzip -q /tmp/platform-tools.zip -d /opt/tools \
     && rm /tmp/platform-tools.zip \
     && wget -q -O /opt/tools/apktool.jar \
         "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar" \
-    && printf '#!/bin/sh\nexec java -jar /opt/tools/apktool.jar "$@"\n' > /usr/local/bin/apktool \
-    && chmod +x /usr/local/bin/apktool \
     && wget -q -O /tmp/jadx.zip \
         "https://github.com/skylot/jadx/releases/download/v${JADX_VER}/jadx-${JADX_VER}.zip" \
     && unzip -q /tmp/jadx.zip -d /opt/tools/jadx \
-    && rm /tmp/jadx.zip \
+    && rm /tmp/jadx.zip
+
+
+# ============================================================================
+# Stage 6: final — assemble all stages + scripts/configs
+# FROM base (NOT base-build!) — ~400MB smaller without gcc/cmake/maven.
+# ============================================================================
+FROM base AS final
+
+# --- Python packages (pip-installed modules + entry-point scripts) ----------
+COPY --from=python /usr/local/lib/ /usr/local/lib/
+COPY --from=python /usr/local/bin/ /usr/local/bin/
+
+# --- radare2 + plugins ------------------------------------------------------
+COPY --from=r2-ghidra /opt/tools/radare2 /opt/tools/radare2
+# Keep source tree — radare2 sys/install.sh symlinks binaries/libs to it
+COPY --from=r2-ghidra /opt/tools/radare2-src /opt/tools/radare2-src
+# Capture any r2pm plugin data written to ctf's home (e.g. r2pm db, plugin configs)
+COPY --from=r2-ghidra /home/ctf /home/ctf
+
+# --- Ghidra + ghidra-mcp ----------------------------------------------------
+COPY --from=r2-ghidra /opt/tools/ghidra /opt/tools/ghidra
+COPY --from=r2-ghidra /opt/tools/ghidra-mcp /opt/tools/ghidra-mcp
+# Merge any extra pip deps installed by ghidra-mcp requirements.txt
+COPY --from=r2-ghidra /usr/local/lib/ /usr/local/lib/
+COPY --from=r2-ghidra /usr/local/bin/ /usr/local/bin/
+
+# --- Fuzzing tools ----------------------------------------------------------
+COPY --from=fuzzing /opt/tools/fuzzing /opt/tools/fuzzing
+
+# --- Android tools ----------------------------------------------------------
+COPY --from=android /opt/tools/platform-tools /opt/tools/platform-tools
+COPY --from=android /opt/tools/apktool.jar /opt/tools/apktool.jar
+COPY --from=android /opt/tools/jadx /opt/tools/jadx
+
+# apktool wrapper + jadx symlinks
+RUN printf '#!/bin/sh\nexec java -jar /opt/tools/apktool.jar "$@"\n' > /usr/local/bin/apktool \
+    && chmod +x /usr/local/bin/apktool \
     && ln -s /opt/tools/jadx/bin/jadx /usr/local/bin/jadx \
     && ln -s /opt/tools/jadx/bin/jadx-gui /usr/local/bin/jadx-gui
 
-ENV PATH="/opt/tools/platform-tools:${PATH}"
+# --- Environment ------------------------------------------------------------
+ENV GHIDRA_INSTALL_DIR=/opt/tools/ghidra
+ENV PATH="/opt/tools/radare2/bin:/home/ctf/.local/share/radare2/prefix/bin:${GHIDRA_INSTALL_DIR}:${GHIDRA_INSTALL_DIR}/support:/opt/tools/fuzzing/bin:/opt/tools/platform-tools:${PATH}"
+ENV LD_LIBRARY_PATH="/opt/tools/radare2/lib:${LD_LIBRARY_PATH:-}"
+ENV PKG_CONFIG_PATH="/opt/tools/radare2/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
-# Scripts & configs (most-frequently-changed, last layer)
+# --- Scripts & configs (most-frequently-changed — keep LAST) ----------------
 COPY scripts/ /opt/tools/scripts/
 COPY configs/ /opt/tools/configs/
 

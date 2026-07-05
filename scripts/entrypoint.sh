@@ -9,8 +9,21 @@ log() { echo "[entrypoint] $*" >&2; }
 # --- Ghidra headless MCP server ---------------------------------------------
 if [[ "${ENABLE_GHIDRA_HEADLESS_MCP:-1}" == "1" ]]; then
   if [[ -f /opt/tools/ghidra-mcp/docker/GhidraMCPHeadless.jar ]]; then
-    log "Starting Ghidra headless MCP server on :${GHIDRA_MCP_PORT}"
-    nohup java -jar /opt/tools/ghidra-mcp/docker/GhidraMCPHeadless.jar \
+    log "Starting Ghidra headless MCP server on 0.0.0.0:${GHIDRA_MCP_PORT}"
+
+    # Build classpath: jar + all Ghidra runtime jars
+    GHIDRA_HOME="${GHIDRA_INSTALL_DIR:-/opt/tools/ghidra}"
+    CP="/opt/tools/ghidra-mcp/docker/GhidraMCPHeadless.jar"
+    for d in Framework Features Processors Debug; do
+      for j in "${GHIDRA_HOME}/Ghidra/${d}"/*/lib/*.jar; do
+        [ -f "$j" ] && CP="${CP}:${j}"
+      done
+    done
+
+    nohup java -Xmx4g -XX:+UseG1GC \
+      -Dghidra.home="${GHIDRA_HOME}" \
+      -classpath "${CP}" \
+      com.xebyte.headless.GhidraMCPHeadlessServer \
       --bind 0.0.0.0 --port "${GHIDRA_MCP_PORT}" \
       > /tmp/ghidra-mcp-headless.log 2>&1 &
   else
@@ -28,7 +41,8 @@ if [[ "${ENABLE_GHIDRA_HEADLESS_MCP:-1}" == "1" ]]; then
   fi
 fi
 
-log "radare2 + r2mcp ready (invoke MCP via: r2pm -r r2mcp, see /opt/tools/configs)"
+log "radare2 + r2mcp ready (invoke MCP via: r2pm -r r2mcp)"
 log "angr / pwntools / AFL++ / honggfuzz / BinDiff / apktool / jadx / frida available on PATH"
+log "MCP servers: radare2 | ghidra-headless | shell | python | fuzz | angr | bindiff | c"
 
 exec "$@"

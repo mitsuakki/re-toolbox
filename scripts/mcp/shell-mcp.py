@@ -1,60 +1,55 @@
 #!/usr/bin/env python3
 """MCP stdio server — execute shell commands inside the container.
 
-Exposes one tool: `shell` — runs a command and returns stdout/stderr/exit code.
-Gives Claude access to all CLI tools: strings, objdump, angr-solve.py,
-fuzz-init.sh, apktool, jadx, bindiff, frida, afl-fuzz, honggfuzz, etc.
+Single tool: `shell` — runs any CLI tool (angr, AFL++, honggfuzz, bindiff,
+apktool, jadx, gcc, python3, etc.) and returns stdout/stderr/exit code.
 """
 
-import asyncio
 import json
 import subprocess
-import sys
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-
-
-server = Server("shell-mcp")
+from mcp.server import FastMCP
+mcp = FastMCP("shell-mcp")
 
 
-@server.tool()
-async def shell(cmd: str, cwd: str = "/workspace", timeout: int = 60) -> str:
+@mcp.tool()
+def shell(cmd: str, cwd: str = "/workspace", timeout: int = 60) -> str:
     """Run a shell command inside the container.
 
+    All CLI tools available: angr, afl-fuzz, honggfuzz, bindiff, apktool,
+    jadx, gcc, clang, python3, gdb, objdump, strings, radare2, etc.
+
     Args:
-        cmd: Shell command to execute (e.g. 'file /workspace/chall.bin')
+        cmd: Shell command to execute
         cwd: Working directory (default /workspace)
-        timeout: Max execution time in seconds (default 60)
+        timeout: Max seconds (default 60, max 300)
 
     Returns:
-        JSON with stdout, stderr, and returncode.
+        JSON with stdout, stderr, returncode.
     """
     try:
-        proc = await asyncio.create_subprocess_shell(
+        result = subprocess.run(
             cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            shell=True,
+            capture_output=True,
+            text=True,
             cwd=cwd,
-        )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout
+            timeout=min(timeout, 300),
         )
         return json.dumps({
-            "stdout": stdout.decode("utf-8", errors="replace")[:50000],
-            "stderr": stderr.decode("utf-8", errors="replace")[:50000],
-            "returncode": proc.returncode,
+            "stdout": result.stdout[:50000],
+            "stderr": result.stderr[:50000],
+            "returncode": result.returncode,
         })
-    except asyncio.TimeoutError:
-        return json.dumps({"error": f"Command timed out after {timeout}s", "returncode": -1})
+    except subprocess.TimeoutExpired:
+        return json.dumps({"error": f"Timed out after {timeout}s", "returncode": -1})
     except Exception as e:
         return json.dumps({"error": str(e), "returncode": -1})
 
 
-async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+def main():
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
