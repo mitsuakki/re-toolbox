@@ -173,12 +173,13 @@ RUN git clone --depth 1 --branch ${AFLPLUSPLUS_VERSION} \
     && rm -rf /opt/tools/AFLplusplus-src
 
 # -- honggfuzz --------------------------------------------------------------
-ARG HONGGFUZZ_VERSION=2.5
+ARG HONGGFUZZ_VERSION=2.6
 
 RUN git clone --depth 1 --branch ${HONGGFUZZ_VERSION} \
         https://github.com/google/honggfuzz /opt/tools/honggfuzz-src \
     && cd /opt/tools/honggfuzz-src \
-    && make -j"$(nproc)" \
+    && make -j"$(nproc)"
+RUN cd /opt/tools/honggfuzz-src \
     && PREFIX=/opt/tools/fuzzing make install \
     && rm -rf /opt/tools/honggfuzz-src
 
