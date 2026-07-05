@@ -41,7 +41,8 @@ if [[ "${ENABLE_GHIDRA_HEADLESS_MCP:-1}" == "1" ]]; then
   fi
 fi
 
-log "radare2 + r2mcp ready (invoke MCP via: r2pm -r r2mcp, see /opt/tools/configs)"
+log "radare2 + r2mcp ready (invoke MCP via: r2pm -r r2mcp)"
 log "angr / pwntools / AFL++ / honggfuzz / BinDiff / apktool / jadx / frida available on PATH"
+log "MCP servers: radare2 | ghidra-headless | shell | python | fuzz | angr | bindiff | c"
 
 exec "$@"

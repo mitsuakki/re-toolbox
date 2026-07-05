@@ -14,35 +14,11 @@
       ]
     },
     "shell": {
-      "_comment": "Generic shell command execution inside the container — gives access to all CLI tools",
+      "_comment": "Generic shell — all CLI tools: angr, AFL++, honggfuzz, bindiff, apktool, jadx, gcc, etc.",
       "command": "docker",
       "args": [
         "exec", "-i", "toolbox",
         "python3", "/opt/tools/scripts/mcp/shell-mcp.py"
-      ]
-    },
-    "python": {
-      "_comment": "Python REPL with angr, pwntools, z3, lief, capstone pre-loaded",
-      "command": "docker",
-      "args": [
-        "exec", "-i", "toolbox",
-        "python3", "/opt/tools/scripts/mcp/python-mcp.py"
-      ]
-    },
-    "fuzz": {
-      "_comment": "Fuzzing harness — scaffold AFL++ or honggfuzz sessions, run smoke tests, triage crashes",
-      "command": "docker",
-      "args": [
-        "exec", "-i", "toolbox",
-        "python3", "/opt/tools/scripts/mcp/fuzz-mcp.py"
-      ]
-    },
-    "angr": {
-      "_comment": "Symbolic analysis — CFG overview, symbolic path finding, function listing",
-      "command": "docker",
-      "args": [
-        "exec", "-i", "toolbox",
-        "python3", "/opt/tools/scripts/mcp/angr-mcp.py"
       ]
     }
   }

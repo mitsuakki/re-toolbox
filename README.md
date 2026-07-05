@@ -150,22 +150,56 @@ curl "http://localhost:8089/decompile_function?program=mybin&name=main"
 
 ### BinDiff
 
-CLI only. Export `.BinExport` from Ghidra or IDA, then:
+CLI + MCP. Export `.BinExport` from Ghidra or IDA, then:
 
 ```bash
 bindiff old.BinExport new.BinExport
 ```
 
+Or use the MCP: `bindiff` tool for diffing, `bindiff_export_from_ghidra` to export
+BinExport directly from a binary via Ghidra headless.
+
 ### angr + Python RE stack
 
 Pre-installed: angr, pwntools, ropper, capstone, unicorn, keystone, z3, lief,
-r2pipe.
+r2pipe. angr has a **built-in MCP server** (`python -m angr.mcp`) — no custom
+wrapper needed.
 
 ```bash
+# CLI
 angr-solve.py info ./chall
 angr-solve.py find ./chall --stdin-len 32 --find "Correct" --avoid "Wrong"
 angr-solve.py find ./chall --find-addr 0x401300 --avoid-addr 0x401234
+
+# MCP (stdio transport)
+python -m angr.mcp
 ```
+
+### C compile & run
+
+MCP server for compiling and running C code inside the container:
+
+```json
+{
+  "mcpServers": {
+    "c": {
+      "command": "docker",
+      "args": [
+        "exec", "-i", "toolbox",
+        "python3", "/opt/tools/scripts/mcp/c-mcp.py"
+      ]
+    }
+  }
+}
+```
+
+Tools:
+- `c_compile` — compile C code, return binary path
+- `c_run` — compile + run, capture stdout/stderr/returncode
+- `c_disasm` — compile + objdump disassembly of the result
+
+Useful for exploit PoC development, testing decompiled-function hypotheses,
+creating fuzzing harnesses on the fly.
 
 ### Fuzzing (AFL++ / honggfuzz)
 
