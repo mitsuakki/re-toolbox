@@ -26,6 +26,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libglib2.0-dev libpixman-1-dev \
         libunwind-dev binutils-dev libblocksruntime-dev \
         libqt5widgets5 libc6-i386 \
+        gcc g++ make \
     && rm -rf /var/lib/apt/lists/* && mkdir -p /var/lib/apt/lists/partial
 
 RUN useradd -m -s /bin/bash -G sudo ctf \
@@ -90,7 +91,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         lief==${LIEF_VERSION} \
         frida-tools==${FRIDA_VERSION} \
         objection==${OBJECTION_VERSION} \
-        mcp==${MCP_VERSION}
+        mcp==${MCP_VERSION} \
+        'pycparser==2.22'
 
 
 # ============================================================================
@@ -104,19 +106,25 @@ ARG R2_VERSION=6.0.8
 RUN git clone --depth 1 --branch ${R2_VERSION} \
         https://github.com/radareorg/radare2 /opt/tools/radare2-src \
     && cd /opt/tools/radare2-src \
-    && PREFIX=/opt/tools/radare2 sys/install.sh \
-    && rm -rf /opt/tools/radare2-src
+    && PREFIX=/opt/tools/radare2 sys/install.sh
+# NOTE: keep radare2-src — sys/install.sh symlinks binaries/libs to it.
+# Deleting it breaks radare2 + r2pm. Extra ~200MB acceptable.
 
 # r2pm plugins (r2mcp, r2ghidra, r2ghidra-sleigh).
 # Run as ctf so any plugin files written to ~/.local are captured.
 ARG MCP_VERSION=1.13.0
-ENV PATH="/opt/tools/radare2/bin:${PATH}"
+ENV PATH="/opt/tools/radare2/bin:${PATH}" \
+    PKG_CONFIG_PATH="/opt/tools/radare2/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 RUN pip3 install --break-system-packages mcp==${MCP_VERSION} \
     && chown -R ctf:ctf /opt/tools/radare2
 USER ctf
+# r2mcp needs a source patch for radare2 >=6.0 (r_core_call_str_at -> r_core_cmd_str_at).
+# r2pm's own make will fail on the ld error; we ignore that, patch, rebuild manually.
 RUN r2pm -U \
-    && r2pm -ci r2mcp r2ghidra r2ghidra-sleigh \
-    || echo "WARN: one or more r2pm plugins failed to install; r2mcp may still work" >&2
+    && r2pm -ci r2mcp r2ghidra r2ghidra-sleigh || true \
+    && cd /home/ctf/.local/share/radare2/r2pm/git/r2mcp/src \
+    && sed -i 's/r_core_call_str_at/r_core_cmd_str_at/g' tools.c \
+    && make clean && make && make user-install
 USER root
 
 # -- Ghidra headless --------------------------------------------------------
@@ -217,6 +225,8 @@ COPY --from=python /usr/local/bin/ /usr/local/bin/
 
 # --- radare2 + plugins ------------------------------------------------------
 COPY --from=r2-ghidra /opt/tools/radare2 /opt/tools/radare2
+# Keep source tree — radare2 sys/install.sh symlinks binaries/libs to it
+COPY --from=r2-ghidra /opt/tools/radare2-src /opt/tools/radare2-src
 # Capture any r2pm plugin data written to ctf's home (e.g. r2pm db, plugin configs)
 COPY --from=r2-ghidra /home/ctf /home/ctf
 
@@ -243,7 +253,9 @@ RUN printf '#!/bin/sh\nexec java -jar /opt/tools/apktool.jar "$@"\n' > /usr/loca
 
 # --- Environment ------------------------------------------------------------
 ENV GHIDRA_INSTALL_DIR=/opt/tools/ghidra
-ENV PATH="/opt/tools/radare2/bin:${GHIDRA_INSTALL_DIR}:${GHIDRA_INSTALL_DIR}/support:/opt/tools/fuzzing/bin:/opt/tools/platform-tools:${PATH}"
+ENV PATH="/opt/tools/radare2/bin:/home/ctf/.local/share/radare2/prefix/bin:${GHIDRA_INSTALL_DIR}:${GHIDRA_INSTALL_DIR}/support:/opt/tools/fuzzing/bin:/opt/tools/platform-tools:${PATH}"
+ENV LD_LIBRARY_PATH="/opt/tools/radare2/lib:${LD_LIBRARY_PATH:-}"
+ENV PKG_CONFIG_PATH="/opt/tools/radare2/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
 # --- Scripts & configs (most-frequently-changed — keep LAST) ----------------
 COPY scripts/ /opt/tools/scripts/
