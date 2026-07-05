@@ -64,9 +64,8 @@ Edit `claude_desktop_config.json` ([where to find it](https://docs.anthropic.com
     "ghidra-headless": {
       "command": "docker",
       "args": [
-        "exec", "-i", "toolbox",
-        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py",
-        "--ghidra-server", "http://127.0.0.1:8089/"
+        "exec", "-i", "-e", "GHIDRA_MCP_URL=http://127.0.0.1:8089", "toolbox",
+        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py"
       ]
     }
   }
@@ -84,9 +83,8 @@ instance:
     "ghidra-gui": {
       "command": "docker",
       "args": [
-        "exec", "-i", "toolbox",
-        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py",
-        "--ghidra-server", "http://host.docker.internal:8080/"
+        "exec", "-i", "-e", "GHIDRA_MCP_URL=http://host.docker.internal:8080", "toolbox",
+        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py"
       ]
     }
   }
@@ -110,9 +108,8 @@ Same format, different file. Create `.claude/mcp.json` in your project root
     "ghidra-headless": {
       "command": "docker",
       "args": [
-        "exec", "-i", "toolbox",
-        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py",
-        "--ghidra-server", "http://127.0.0.1:8089/"
+        "exec", "-i", "-e", "GHIDRA_MCP_URL=http://127.0.0.1:8089", "toolbox",
+        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py"
       ]
     }
   }
