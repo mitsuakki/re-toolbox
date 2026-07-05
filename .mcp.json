@@ -1,0 +1,25 @@
+{
+  "_comment": "Snippet to merge into your MCP client config (e.g. claude_desktop_config.json).",
+  "mcpServers": {
+    "radare2": {
+      "command": "docker",
+      "args": ["exec", "-i", "toolbox", "r2pm", "-r", "r2mcp"]
+    },
+    "ghidra-headless": {
+      "_comment": "Talks to the headless ghidra-mcp HTTP server started by entrypoint.sh on :8089",
+      "command": "docker",
+      "args": [
+        "exec", "-i", "-e", "GHIDRA_MCP_URL=http://127.0.0.1:8089", "toolbox",
+        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py"
+      ]
+    },
+    "shell": {
+      "_comment": "Generic shell — all CLI tools: angr, AFL++, honggfuzz, bindiff, apktool, jadx, gcc, etc.",
+      "command": "docker",
+      "args": [
+        "exec", "-i", "toolbox",
+        "python3", "/opt/tools/scripts/mcp/shell-mcp.py"
+      ]
+    }
+  }
+}
