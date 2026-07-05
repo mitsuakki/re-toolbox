@@ -61,16 +61,14 @@ FROM base-build AS python
 
 # Versions pinned for reproducible builds.
 # Bump these ARGs to upgrade.
+# NOTE: capstone, unicorn, claripy, pyelftools, z3-solver are left unpinned —
+# angr pins exact versions of its own transitive deps. Let pip resolve them.
 ARG ANGR_VERSION=9.2.194
-ARG PWNYOOLS_VERSION=4.15.0
+ARG PWNTOOLS_VERSION=4.15.0
 ARG FRIDA_VERSION=14.9.0
 ARG LIEF_VERSION=0.17.6
 ARG OBJECTION_VERSION=1.12.5
-ARG CAPSTONE_VERSION=5.0.5
-ARG UNICORN_VERSION=2.1.2
 ARG KEYSTONE_VERSION=0.9.2
-ARG PYELFTOOLS_VERSION=0.31
-ARG Z3_VERSION=4.14.0
 ARG R2PIPE_VERSION=1.9.0
 ARG ROPPER_VERSION=1.13.10
 ARG ROPGADGET_VERSION=7.6
@@ -80,14 +78,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --break-system-packages \
         angr==${ANGR_VERSION} \
         claripy \
-        pwntools==${PWNYOOLS_VERSION} \
+        pwntools==${PWNTOOLS_VERSION} \
         ropper==${ROPPER_VERSION} \
         ropgadget==${ROPGADGET_VERSION} \
-        capstone==${CAPSTONE_VERSION} \
-        unicorn==${UNICORN_VERSION} \
+        capstone \
+        unicorn \
         keystone-engine==${KEYSTONE_VERSION} \
-        pyelftools==${PYELFTOOLS_VERSION} \
-        z3-solver==${Z3_VERSION} \
+        pyelftools \
+        z3-solver \
         r2pipe==${R2PIPE_VERSION} \
         lief==${LIEF_VERSION} \
         frida-tools==${FRIDA_VERSION} \
