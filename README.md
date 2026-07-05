@@ -7,6 +7,21 @@ AFL++, honggfuzz, and Android tools (apktool, jadx, frida).
 **Headless only** — no GUI, no VNC. Everything runs in the terminal or through
 MCP.
 
+## Requirements
+
+| Software | Minimum | Why |
+|---|---|---|
+| [Docker](https://docs.docker.com/engine/install/) | **23.0+** | BuildKit (default since 23.0). Needed for `# syntax=dockerfile:1`, cache mounts, multi-stage builds. |
+| [Docker Compose](https://docs.docker.com/compose/install/) | **2.0+** | Compose V2 (`docker compose`, not `docker-compose`). Included with Docker Desktop and `docker-ce` packages. |
+
+BuildKit is the hard requirement. If you're on Docker 18.09–22.x, export
+`DOCKER_BUILDKIT=1` before building:
+
+```bash
+export DOCKER_BUILDKIT=1
+docker compose build
+```
+
 ## Quick start
 
 ```bash
