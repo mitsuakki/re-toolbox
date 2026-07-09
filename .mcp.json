@@ -1,12 +1,9 @@
 {
-  "_comment": "Single MCP entry point. Two transport options:", "_transport_stdio": "docker exec (requires Docker socket access)", "_transport_http": "StreamableHTTP (works from any host — no Docker socket needed)",
+  "_comment": "Single MCP entry point via StreamableHTTP — no Docker socket needed.",
   "mcpServers": {
     "toolbox": {
-      "command": "docker",
-      "args": [
-        "exec", "-i", "toolbox",
-        "python3", "/opt/tools/scripts/mcp/gateway.py"
-      ]
+      "type": "http",
+      "url": "http://localhost:3100/mcp"
     }
   }
 }

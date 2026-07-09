@@ -299,6 +299,7 @@ class Gateway:
 
     async def run_http(self, host: str = "0.0.0.0", port: int = 3100) -> None:
         """Serve via StreamableHTTP (browser/remote transport)."""
+        import uvicorn
         from mcp.server.streamable_http import StreamableHTTPServerTransport
 
         transport = StreamableHTTPServerTransport(mcp_session_id=None)
