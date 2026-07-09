@@ -1,48 +1,65 @@
-#!/usr/bin/env bash
-
+#!/bin/bash
 set -euo pipefail
 
-GHIDRA_MCP_PORT="${GHIDRA_MCP_PORT:-8089}"
+# ============================================================================
+# toolbox entrypoint — start background services, then hand off to CMD
+# ============================================================================
 
-log() { echo "[entrypoint] $*" >&2; }
+# -- Ghidra headless MCP HTTP server -----------------------------------------
+if [[ "${ENABLE_GHIDRA_HEADLESS_MCP:-0}" == "1" ]]; then
+    GHIDRA_MCP_DIR="/opt/tools/ghidra-mcp"
+    GHIDRA_JAR="${GHIDRA_MCP_DIR}/docker/GhidraMCPHeadless.jar"
+    GHIDRA_MCP_PORT="${GHIDRA_MCP_PORT:-8089}"
+    GHIDRA_MCP_HOST="${GHIDRA_MCP_HOST:-0.0.0.0}"
+    GHIDRA_MCP_TOKEN="${GHIDRA_MCP_AUTH_TOKEN:-re-toolbox-dev-secret}"
 
-# --- Ghidra headless MCP server ---------------------------------------------
-if [[ "${ENABLE_GHIDRA_HEADLESS_MCP:-1}" == "1" ]]; then
-  if [[ -f /opt/tools/ghidra-mcp/docker/GhidraMCPHeadless.jar ]]; then
-    log "Starting Ghidra headless MCP server on 0.0.0.0:${GHIDRA_MCP_PORT}"
+    if [[ -f "${GHIDRA_JAR}" ]]; then
+        echo "[entrypoint] Starting ghidra-mcp headless on ${GHIDRA_MCP_HOST}:${GHIDRA_MCP_PORT}…"
 
-    # Build classpath: jar + all Ghidra runtime jars
-    GHIDRA_HOME="${GHIDRA_INSTALL_DIR:-/opt/tools/ghidra}"
-    CP="/opt/tools/ghidra-mcp/docker/GhidraMCPHeadless.jar"
-    for d in Framework Features Processors Debug; do
-      for j in "${GHIDRA_HOME}/Ghidra/${d}"/*/lib/*.jar; do
-        [ -f "$j" ] && CP="${CP}:${j}"
-      done
-    done
+        # Build classpath: ghidra-mcp JAR + Ghidra's Framework/Features/Processors libs
+        GHIDRA_HOME="${GHIDRA_INSTALL_DIR:-/opt/tools/ghidra}"
+        CLASSPATH="${GHIDRA_JAR}"
+        for jar in "${GHIDRA_HOME}"/Ghidra/Framework/*/lib/*.jar; do
+            [ -f "$jar" ] && CLASSPATH="${CLASSPATH}:${jar}"
+        done
+        for jar in "${GHIDRA_HOME}"/Ghidra/Features/*/lib/*.jar; do
+            [ -f "$jar" ] && CLASSPATH="${CLASSPATH}:${jar}"
+        done
+        for jar in "${GHIDRA_HOME}"/Ghidra/Processors/*/lib/*.jar; do
+            [ -f "$jar" ] && CLASSPATH="${CLASSPATH}:${jar}"
+        done
 
-    nohup java -Xmx4g -XX:+UseG1GC \
-      -Dghidra.home="${GHIDRA_HOME}" \
-      -classpath "${CP}" \
-      com.xebyte.headless.GhidraMCPHeadlessServer \
-      --bind 0.0.0.0 --port "${GHIDRA_MCP_PORT}" \
-      > /tmp/ghidra-mcp-headless.log 2>&1 &
-  else
-    log "ghidra-mcp headless jar not found (build step may have been skipped or failed at image build time)."
-    log "Build manually inside the container with:"
-    log "  cd /opt/tools/ghidra-mcp"
-    log "  python3 -m tools.setup ensure-prereqs --ghidra-path \"\${GHIDRA_INSTALL_DIR}\""
-    log "  mvn -DskipTests -Pheadless clean package"
-    log "  cp target/*Headless*.jar docker/GhidraMCPHeadless.jar"
-    log "Note: ghidra-mcp's pom.xml pins a specific Ghidra <ghidra.version>;"
-    log "if that no longer matches the Ghidra release baked into this image"
-    log "(currently under \${GHIDRA_INSTALL_DIR}), ensure-prereqs will fail fast"
-    log "with a version-mismatch error -- update GHIDRA_VERSION in the Dockerfile"
-    log "to match and rebuild the image."
-  fi
+        export GHIDRA_MCP_AUTH_TOKEN="${GHIDRA_MCP_TOKEN}"
+
+        java -Xmx4g -XX:+UseG1GC \
+            -Dghidra.home="${GHIDRA_HOME}" \
+            -Dapplication.name=GhidraMCP \
+            -classpath "${CLASSPATH}" \
+            com.xebyte.headless.GhidraMCPHeadlessServer \
+            --bind "${GHIDRA_MCP_HOST}" \
+            --port "${GHIDRA_MCP_PORT}" \
+            &>/tmp/ghidra-mcp.log &
+        GHIDRA_PID=$!
+
+        # Wait until the HTTP server is accepting connections
+        echo "[entrypoint] Waiting for ghidra-mcp to be ready…"
+        for i in $(seq 1 30); do
+            if curl -sf -o /dev/null -H "Authorization: Bearer ${GHIDRA_MCP_TOKEN}" \
+                    "http://127.0.0.1:${GHIDRA_MCP_PORT}/health" 2>/dev/null; then
+                echo "[entrypoint] ghidra-mcp ready (pid ${GHIDRA_PID})"
+                break
+            fi
+            sleep 1
+        done
+
+        if ! kill -0 "${GHIDRA_PID}" 2>/dev/null; then
+            echo "[entrypoint] WARNING: ghidra-mcp failed to start. Check /tmp/ghidra-mcp.log"
+        fi
+    else
+        echo "[entrypoint] WARNING: GhidraMCPHeadless.jar not found at ${GHIDRA_JAR} — skipping"
+    fi
 fi
 
-log "radare2 + r2mcp ready (invoke MCP via: r2pm -r r2mcp)"
-log "angr / pwntools / AFL++ / honggfuzz / BinDiff / apktool / jadx / frida available on PATH"
-log "MCP servers: radare2 | ghidra-headless | shell | python | fuzz | angr | bindiff | c"
-
+# -- Hand off ----------------------------------------------------------------
+echo "[entrypoint] toolbox ready. Executing: $*"
 exec "$@"

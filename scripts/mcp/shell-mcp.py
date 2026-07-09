@@ -1,55 +1,153 @@
 #!/usr/bin/env python3
-"""MCP stdio server — execute shell commands inside the container.
+"""
+Shell MCP server — exposes a single `exec` tool for running commands.
 
-Single tool: `shell` — runs any CLI tool (angr, AFL++, honggfuzz, bindiff,
-apktool, jadx, gcc, python3, etc.) and returns stdout/stderr/exit code.
+All tools exposed through the CLI: angr, AFL++, honggfuzz, bindiff, apktool,
+jadx, radare2, ghidra headless, gcc, python3, gdb, etc.
 """
 
-import json
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
 import subprocess
+import sys
 
-from mcp.server import FastMCP
-mcp = FastMCP("shell-mcp")
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import TextContent, Tool
+
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s [shell-mcp] %(levelname)s: %(message)s",
+    stream=sys.stderr,
+)
+log = logging.getLogger("shell-mcp")
+
+# Security: commands with destructive or interactive potential blocked
+BLOCKED_COMMANDS = [
+    "rm -rf /",
+    "mkfs.",
+    "dd if=",
+    ":(){ :|:& };:",  # fork bomb
+]
+
+MAX_OUTPUT_BYTES = 256 * 1024  # 256 KiB
+DEFAULT_TIMEOUT = 60  # seconds
+MAX_TIMEOUT = 300  # 5 minutes
+
+CMD_DESCRIPTION = (
+    "Execute a shell command inside the toolbox container. "
+    "All CLI tools are available: angr, AFL++, honggfuzz, bindiff, apktool, "
+    "jadx, radare2, Ghidra headless, gcc/clang, python3, gdb, strace, ltrace, etc. "
+    "The command runs in a non-interactive shell (bash -c). "
+    "Set workdir to change the working directory (default: /workspace)."
+)
+
+server = Server("shell-mcp")
 
 
-@mcp.tool()
-def shell(cmd: str, cwd: str = "/workspace", timeout: int = 60) -> str:
-    """Run a shell command inside the container.
+@server.list_tools()
+async def list_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="exec",
+            description=CMD_DESCRIPTION,
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command to execute.",
+                    },
+                    "workdir": {
+                        "type": "string",
+                        "description": "Working directory. Defaults to /workspace.",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": f"Timeout in seconds. Max {MAX_TIMEOUT}s. Default: {DEFAULT_TIMEOUT}s.",
+                    },
+                },
+                "required": ["command"],
+            },
+        ),
+    ]
 
-    All CLI tools available: angr, afl-fuzz, honggfuzz, bindiff, apktool,
-    jadx, gcc, clang, python3, gdb, objdump, strings, radare2, etc.
 
-    Args:
-        cmd: Shell command to execute
-        cwd: Working directory (default /workspace)
-        timeout: Max seconds (default 60, max 300)
+@server.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    if name != "exec":
+        raise ValueError(f"Unknown tool: {name}")
 
-    Returns:
-        JSON with stdout, stderr, returncode.
-    """
+    command: str = arguments["command"]
+    workdir: str = arguments.get("workdir", "/workspace")
+    timeout: int = min(
+        int(arguments.get("timeout", DEFAULT_TIMEOUT)), MAX_TIMEOUT
+    )
+
+    # Basic safety check
+    for blocked in BLOCKED_COMMANDS:
+        if blocked in command:
+            return [TextContent(
+                type="text",
+                text=f"Blocked: command matches blocked pattern '{blocked}'",
+            )]
+
+    # Resolve workdir
+    if not os.path.isdir(workdir):
+        return [TextContent(
+            type="text",
+            text=f"Error: workdir does not exist: {workdir}",
+        )]
+
     try:
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=cwd,
-            timeout=min(timeout, 300),
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=workdir,
+            executable="/bin/bash",
         )
-        return json.dumps({
-            "stdout": result.stdout[:50000],
-            "stderr": result.stderr[:50000],
-            "returncode": result.returncode,
-        })
-    except subprocess.TimeoutExpired:
-        return json.dumps({"error": f"Timed out after {timeout}s", "returncode": -1})
-    except Exception as e:
-        return json.dumps({"error": str(e), "returncode": -1})
+
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return [TextContent(
+                type="text",
+                text=f"Command timed out after {timeout}s.\nPartial output:\n{_read_stdout(stdout) if 'stdout' in dir() else '(killed before output)'}",
+            )]
+
+        output = stdout.decode("utf-8", errors="replace") if stdout else "(no output)"
+        if len(output) > MAX_OUTPUT_BYTES:
+            output = output[:MAX_OUTPUT_BYTES] + f"\n\n[truncated at {MAX_OUTPUT_BYTES} bytes]"
+
+        return [TextContent(
+            type="text",
+            text=f"Exit code: {proc.returncode}\n\n{output}",
+        )]
+
+    except FileNotFoundError:
+        return [TextContent(type="text", text="Error: bash not found in container")]
+    except Exception as exc:
+        return [TextContent(type="text", text=f"Error: {exc}")]
 
 
-def main():
-    mcp.run(transport="stdio")
+def _read_stdout(stdout: bytes | None) -> str:
+    if not stdout:
+        return "(no output)"
+    return stdout.decode("utf-8", errors="replace")[:MAX_OUTPUT_BYTES]
+
+
+async def main() -> None:
+    async with stdio_server() as (read, write):
+        await server.run(read, write, server.create_initialization_options())
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

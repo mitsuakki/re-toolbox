@@ -257,9 +257,8 @@ ENV PATH="/opt/tools/radare2/bin:/home/ctf/.local/share/radare2/prefix/bin:${GHI
 ENV LD_LIBRARY_PATH="/opt/tools/radare2/lib:${LD_LIBRARY_PATH:-}"
 ENV PKG_CONFIG_PATH="/opt/tools/radare2/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
-# --- Scripts & configs (most-frequently-changed — keep LAST) ----------------
+# --- Scripts (most-frequently-changed — keep LAST) --------------------------
 COPY scripts/ /opt/tools/scripts/
-COPY configs/ /opt/tools/configs/
 
 RUN chmod +x /opt/tools/scripts/*.sh \
     && mkdir -p /home/ctf/.config/ghidra \
