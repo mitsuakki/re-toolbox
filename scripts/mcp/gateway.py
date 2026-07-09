@@ -290,11 +290,44 @@ class Gateway:
     async def close(self) -> None:
         await self._exit_stack.aclose()
 
-    async def run(self) -> None:
-        """Serve via stdio."""
+    async def run_stdio(self) -> None:
+        """Serve via stdio (docker exec transport)."""
         async with stdio_server() as (read, write):
             await self.server.run(
                 read, write, self.server.create_initialization_options()
+            )
+
+    async def run_http(self, host: str = "0.0.0.0", port: int = 3100) -> None:
+        """Serve via StreamableHTTP (browser/remote transport)."""
+        from mcp.server.streamable_http import StreamableHTTPServerTransport
+
+        transport = StreamableHTTPServerTransport(mcp_session_id=None)
+
+        # Minimal ASGI wrapper so uvicorn can serve at /mcp
+        async def asgi_app(scope, receive, send):
+            if scope["type"] == "lifespan":
+                # Accept lifespan startup/shutdown — no-op
+                while True:
+                    message = await receive()
+                    if message["type"] == "lifespan.startup":
+                        await send({"type": "lifespan.startup.complete"})
+                    elif message["type"] == "lifespan.shutdown":
+                        await send({"type": "lifespan.shutdown.complete"})
+                        return
+            else:
+                await transport.handle_request(scope, receive, send)
+
+        config = uvicorn.Config(
+            asgi_app, host=host, port=port, log_level="warning",
+        )
+        httpd = uvicorn.Server(config)
+
+        async with transport.connect() as (read, write):
+            await asyncio.gather(
+                httpd.serve(),
+                self.server.run(
+                    read, write, self.server.create_initialization_options(),
+                ),
             )
 
 
@@ -303,10 +336,28 @@ class Gateway:
 # ===========================================================================
 
 async def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="MCP Gateway")
+    parser.add_argument(
+        "--transport", choices=("stdio", "http"), default="stdio",
+        help="Transport mode (default: stdio)",
+    )
+    parser.add_argument(
+        "--host", default="0.0.0.0", help="HTTP bind address (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=3100, help="HTTP port (default: 3100)",
+    )
+    args = parser.parse_args()
+
     gateway = Gateway()
     try:
         await gateway.start()
-        await gateway.run()
+        if args.transport == "http":
+            await gateway.run_http(host=args.host, port=args.port)
+        else:
+            await gateway.run_stdio()
     finally:
         await gateway.close()
 
