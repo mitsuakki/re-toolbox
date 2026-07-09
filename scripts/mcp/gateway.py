@@ -65,6 +65,7 @@ class ChildDef:
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     timeout_connect: float = 15.0  # generous — ghidra bridge can be slow
+    dynamic: bool = False  # True = tools change at runtime (e.g. after import_file)
 
 
 CHILDREN: list[ChildDef] = [
@@ -79,6 +80,7 @@ CHILDREN: list[ChildDef] = [
         args=["/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py"],
         env={"GHIDRA_MCP_URL": os.environ.get("GHIDRA_MCP_URL", "http://127.0.0.1:8089")},
         timeout_connect=20.0,
+        dynamic=True,  # tools appear/disappear after import_file / connect_instance
     ),
     ChildDef(
         namespace="shell",
@@ -101,12 +103,17 @@ CHILDREN: list[ChildDef] = [
 class Gateway:
     """Composes child MCP servers behind a single stdio transport."""
 
+    # Tools whose success triggers a tool-list refresh on dynamic children
+    _REFRESH_TRIGGERS = {"import_file", "connect_instance"}
+
     def __init__(self) -> None:
         self.server = Server("toolbox-gateway")
         self._exit_stack = AsyncExitStack()
         self._children: dict[str, ClientSession] = {}
+        self._child_defs: dict[str, ChildDef] = {}
         # namespaced_name -> (namespace, original_name, Tool)
         self._tools: dict[str, tuple[str, str, Tool]] = {}
+        self._tools_lock = asyncio.Lock()
 
     # ---- child lifecycle ------------------------------------------------------
 
@@ -144,16 +151,18 @@ class Gateway:
                     timeout=child_def.timeout_connect,
                 )
                 self._children[ns] = session
+                self._child_defs[ns] = child_def
 
                 # Enumerate tools
                 tools_result = await session.list_tools()
-                for tool in tools_result.tools:
-                    ns_name = self._ns_name(ns, tool.name)
-                    self._tools[ns_name] = (ns, tool.name, tool)
-                    log.info("  tool: %s", ns_name)
+                async with self._tools_lock:
+                    for tool in tools_result.tools:
+                        ns_name = self._ns_name(ns, tool.name)
+                        self._tools[ns_name] = (ns, tool.name, tool)
+                        log.info("  tool: %s", ns_name)
 
                 if not tools_result.tools:
-                    log.warning("  %s MCP: no tools exposed", ns)
+                    log.warning("  %s MCP: no tools exposed (may be dynamic)", ns)
 
             except asyncio.TimeoutError:
                 log.error("%s MCP: connection timed out after %ss — skipped", ns, child_def.timeout_connect)
@@ -164,6 +173,26 @@ class Gateway:
             log.error("No child MCPs connected — gateway is empty")
 
         self._register_handlers()
+
+    async def _refresh_child_tools(self, ns: str) -> None:
+        """Re-fetch tool list from a dynamic child after instance state change."""
+        session = self._children.get(ns)
+        if not session:
+            return
+        try:
+            tools_result = await session.list_tools()
+            async with self._tools_lock:
+                # Remove old tools for this namespace
+                stale = [k for k, v in self._tools.items() if v[0] == ns]
+                for k in stale:
+                    del self._tools[k]
+                # Register current tools
+                for tool in tools_result.tools:
+                    ns_name = self._ns_name(ns, tool.name)
+                    self._tools[ns_name] = (ns, tool.name, tool)
+            log.info("refreshed %s tools: %d total", ns, len(tools_result.tools))
+        except Exception:
+            log.exception("failed to refresh %s tools", ns)
 
     # ---- namespacing ----------------------------------------------------------
 
@@ -178,25 +207,35 @@ class Gateway:
 
         @server.list_tools()
         async def list_tools() -> list[Tool]:
-            tools: list[Tool] = []
-            for ns_name, (_ns, _orig, tool) in sorted(self._tools.items()):
-                tools.append(Tool(
-                    name=ns_name,
-                    description=f"[{_ns}] {tool.description or ''}",
-                    inputSchema=tool.inputSchema,
-                ))
-            return tools
+            async with self._tools_lock:
+                tools: list[Tool] = []
+                for ns_name, (_ns, _orig, tool) in sorted(self._tools.items()):
+                    tools.append(Tool(
+                        name=ns_name,
+                        description=f"[{_ns}] {tool.description or ''}",
+                        inputSchema=tool.inputSchema,
+                    ))
+                return tools
 
         @server.call_tool()
         async def call_tool(
             name: str, arguments: dict[str, Any]
         ) -> list[TextContent | ImageContent | EmbeddedResource]:
-            if name not in self._tools:
-                raise ValueError(f"Unknown tool: {name}")
+            async with self._tools_lock:
+                if name not in self._tools:
+                    raise ValueError(f"Unknown tool: {name}")
+                ns, orig_name, _tool = self._tools[name]
 
-            ns, orig_name, _tool = self._tools[name]
             session = self._children[ns]
             result: CallToolResult = await session.call_tool(orig_name, arguments)
+
+            # Ghidra tools are dynamic: after import_file or connect_instance,
+            # new instance-scoped tools (decompile, list_functions, debugger, …)
+            # become available on the bridge. Refresh so they appear in list_tools.
+            child_def = self._child_defs.get(ns)
+            if child_def and child_def.dynamic and orig_name in self._REFRESH_TRIGGERS:
+                await self._refresh_child_tools(ns)
+
             return result.content
 
         @server.list_resources()
