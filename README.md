@@ -1,9 +1,9 @@
 # re-toolbox
 
 All-in-one Docker container for reverse engineering — radare2 + Ghidra headless
-wired up as MCP servers, plus BinDiff, angr, AFL++, honggfuzz, and Android tools
+wired as MCP servers, plus BinDiff, angr, AFL++, honggfuzz, and Android tools
 (apktool, jadx, frida). Usable with Claude Code, Claude Desktop, Cline, Continue,
-or any MCP client.
+or any MCP client that speaks StreamableHTTP.
 
 Headless only — no GUI, no VNC. Everything runs in the terminal or through MCP.
 
@@ -19,26 +19,27 @@ Docker 18.09–22.x users: export `DOCKER_BUILDKIT=1` before building.
 ```bash
 docker compose build
 docker compose up -d
-docker exec -it toolbox bash
 ```
 
-Drop binaries in `./workspace` — mounted at `/workspace` inside the container.
+Container starts, gateway listens on `localhost:3100`. Drop binaries in
+`./workspace` — mounted at `/workspace` inside the container.
+
+```bash
+docker exec -it toolbox bash   # optional — CLI access to all tools
+```
 
 ## MCP
 
-**Single entry point.** Copy the `toolbox` entry from [`.mcp.json`](.mcp.json) into
+**Single HTTP endpoint.** Copy the `toolbox` entry from [`.mcp.json`](.mcp.json) into
 your MCP client config. The gateway composes all toolbox MCP servers behind one
-transport — no need to register each server individually.
+URL — no Docker socket, no `docker exec`, no per-server registration.
 
 ```json
 {
   "mcpServers": {
     "toolbox": {
-      "command": "docker",
-      "args": [
-        "exec", "-i", "toolbox",
-        "python3", "/opt/tools/scripts/mcp/gateway.py"
-      ]
+      "type": "http",
+      "url": "http://localhost:3100/mcp"
     }
   }
 }
@@ -54,24 +55,33 @@ Claude Code users: the project's `.mcp.json` auto-configures this. Other clients
 | Continue | `~/.continue/config.json` |
 | Zed | `settings.json` → `{"context_servers": {...}}` |
 
-Restart the client after editing. `docker exec -i toolbox ...` spawns the gateway
-on demand — no long-running MCP process to manage on the host.
+Restart the client after editing. The gateway runs as a background service inside
+the container — always up, no cold start.
 
 ### Architecture
 
 ```
 MCP client (Claude Code, Desktop, etc.)
-  └─ docker exec -i toolbox python3 gateway.py     single stdio transport
-       ├─ r2pm -r r2mcp                → r2__* tools
-       ├─ bridge_mcp_ghidra.py          → ghidra__* tools (connects to :8089)
-       ├─ shell-mcp.py                  → shell__exec tool
-       └─ python3 -m angr.mcp           → angr__* tools
+  │  HTTP POST /mcp (StreamableHTTP)
+  ▼
+localhost:3100  ───────────────────────────────────────┐
+  │                                                     │
+  │  docker compose port mapping                        │
+  ▼                                                     │
+┌───────────────────────────────────────────────────┐   │
+│ container: toolbox                                │   │
+│                                                   │   │
+│  gateway.py --transport http :3100                │   │
+│    ├─ r2pm -r r2mcp               → r2__*         │   │
+│    ├─ bridge_mcp_ghidra.py :8089   → ghidra__*    │   │
+│    ├─ shell-mcp.py                 → shell__*     │   │
+│    └─ python3 -m angr.mcp          → angr__*      │   │
+└───────────────────────────────────────────────────┘   │
 ```
 
-The gateway starts each child MCP server inside the container and proxies every
-request. Tools are **namespaced** (`r2__*`, `ghidra__*`, `shell__*`) so they
-never collide. Failed children are logged but don't block the gateway — it runs
-in degraded mode with whatever connected.
+Gateway starts all child MCP servers at boot. Tools are **namespaced**
+(`r2__*`, `ghidra__*`, `shell__*`, `angr__*`) — never collide. Failed children
+are logged but don't block the gateway; it degrades with whatever connected.
 
 ### Server catalog
 
@@ -81,59 +91,6 @@ in degraded mode with whatever connected.
 | `ghidra__*` | bridge_mcp_ghidra.py → Ghidra headless :8089 | Project mgmt, import, auto-analysis, 200+ tools: decompilation, patching, struct/types, debugger, Bindiff |
 | `shell__*` | shell-mcp.py | Arbitrary shell commands — angr, AFL++, honggfuzz, apktool, jadx, gdb, gcc, python3, etc. |
 | `angr__*` | angr.mcp (built-in) | Binary analysis — project loading, CFG, symbolic execution, data dependency, VFG |
-
-### Individual servers (advanced)
-
-You can also register servers individually — skip the gateway and connect
-directly to a single MCP. Useful for debugging or when you only need one tool.
-
-<details>
-<summary>Individual MCP configs (click to expand)</summary>
-
-**radare2** — always ready, no server to start.
-
-```json
-{"mcpServers": {"radare2": {"command": "docker", "args": ["exec", "-i", "toolbox", "r2pm", "-r", "r2mcp"]}}}
-```
-
-**Ghidra headless** — server auto-starts on :8089 (`ENABLE_GHIDRA_HEADLESS_MCP=1` in docker-compose.yml).
-
-```json
-{"mcpServers": {"ghidra-headless": {"command": "docker", "args": ["exec", "-i", "-e", "GHIDRA_MCP_URL=http://127.0.0.1:8089", "toolbox", "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py"]}}}
-```
-
-**Shell** — arbitrary command execution.
-
-```json
-{"mcpServers": {"shell": {"command": "docker", "args": ["exec", "-i", "toolbox", "python3", "/opt/tools/scripts/mcp/shell-mcp.py"]}}}
-```
-
-**angr (built-in MCP)** — angr 9.2 ships its own MCP server.
-
-```json
-{"mcpServers": {"angr": {"command": "docker", "args": ["exec", "-i", "toolbox", "python3", "-m", "angr.mcp"]}}}
-```
-
-</details>
-
-### Ghidra GUI (optional)
-
-If you run Ghidra GUI on your host with the GhidraMCP plugin on port 8080,
-connect from an MCP client:
-
-```json
-{
-  "mcpServers": {
-    "ghidra-gui": {
-      "command": "docker",
-      "args": [
-        "exec", "-i", "-e", "GHIDRA_MCP_URL=http://host.docker.internal:8080", "toolbox",
-        "python3", "/opt/tools/ghidra-mcp/bridge_mcp_ghidra.py"
-      ]
-    }
-  }
-}
-```
 
 ### Ghidra tool availability
 
@@ -165,6 +122,19 @@ dynamically from the headless server's `/mcp/schema` after connect. If a tool
 shows `not_loaded` (exists but its group isn't loaded), call `load_tool_group`
 with the category name. Use `list_tool_groups` to see all categories and their
 loaded status.
+
+### Ghidra GUI (optional)
+
+Run Ghidra GUI on your host with the GhidraMCP plugin on port 8080. Set
+`GHIDRA_MCP_URL` in `docker-compose.yml` to point the bridge at your host:
+
+```yaml
+environment:
+  - GHIDRA_MCP_URL=http://host.docker.internal:8080
+```
+
+Rebuild and the gateway's ghidra bridge will route to your GUI instance instead
+of the headless server.
 
 ## Agents
 
@@ -204,10 +174,16 @@ tools: [Read, Bash, mcp__toolbox__ghidra__*, mcp__toolbox__r2__*, mcp__toolbox__
 ---
 ```
 
-`tools` is optional — omit to inherit all tools from the parent session. For MCP
-tools, use the namespaced names: `mcp__toolbox__<server>__<tool_name>`.
+`tools` is optional — omit to inherit all tools from the parent session. MCP
+tools use namespaced names: `mcp__toolbox__<server>__<tool_name>`.
 
 ## CLI tools
+
+All tools available inside the container. Shell in with:
+
+```bash
+docker exec -it toolbox bash
+```
 
 ### radare2
 
@@ -227,14 +203,14 @@ r2pm -r r2mcp -t                    # list MCP tools exposed by r2mcp
 /opt/tools/scripts/load-ghidra.sh /workspace/my-binary --no-analyze
 ```
 
-The script checks MCP server health, imports via `analyzeHeadless`, and calls
-`/load_program` to make the binary available to the bridge. Projects land in
-`/home/ctf/ghidra-projects` (persisted in the `ghidra-projects` Docker volume).
+Checks MCP server health, imports via `analyzeHeadless`, calls `/load_program`
+so the bridge sees the binary. Projects land in
+`/home/ctf/.config/ghidra` (persisted via Docker volume `ghidra-projects`).
 
 **Manual import** with analyzeHeadless:
 
 ```bash
-/opt/tools/ghidra/support/analyzeHeadless /home/ctf/ghidra-projects myproj \
+/opt/tools/ghidra/support/analyzeHeadless /home/ctf/.config/ghidra myproj \
   -import /workspace/chall -overwrite
 ```
 
@@ -273,7 +249,7 @@ print(f'{len(cfg.kb.functions)} functions, entry at {hex(p.entry)}')
 
 ### Fuzzing
 
-AFL++ and honggfuzz are installed under `/opt/tools/fuzzing/bin` (on PATH).
+AFL++ and honggfuzz installed under `/opt/tools/fuzzing/bin` (on PATH).
 
 ```bash
 # AFL++
@@ -305,19 +281,20 @@ objection -g com.example.app explore
 
 ```
 .
-├── .mcp.json                    MCP config — paste into your client (single entry)
+├── .mcp.json                    MCP config — paste into your client (single HTTP entry)
 ├── CLAUDE.md                    Agent reference + quickstart for Claude Code
 ├── docker-compose.yml           One-command start
 ├── docker/
 │   └── Dockerfile               Multi-stage build, pinned versions
 ├── scripts/
-│   ├── entrypoint.sh            Container entrypoint (starts Ghidra MCP daemon)
+│   ├── entrypoint.sh            Container entrypoint (starts Ghidra MCP + gateway HTTP)
 │   ├── load-ghidra.sh           Import + load binary into Ghidra MCP from CLI
 │   └── mcp/
-│       ├── gateway.py           MCP gateway — composes all servers behind one transport
+│       ├── gateway.py           MCP gateway — composes all servers behind one HTTP endpoint
 │       └── shell-mcp.py         Shell command MCP server
 ├── .claude/
 │   ├── settings.json            Auto-enables project MCP servers
+│   ├── settings.local.json      Local overrides (git-ignored)
 │   └── agents/                  Specialized RE agents (auto-loaded by Claude Code)
 │       ├── binary-triage.md     Fast radare2 first-look
 │       ├── ghidra-importer.md   Binary import + auto-analysis
@@ -333,8 +310,13 @@ Compose adds `SYS_PTRACE` and disables seccomp (`unconfined`) — required by
 gdb, strace, and AFL. Run this container in an isolated VM when analyzing
 untrusted binaries.
 
+The MCP gateway listens on `0.0.0.0:3100` inside the container. Only the port
+you choose to expose in `docker-compose.yml` reaches your host. No
+authentication on the gateway itself — treat it as a local development tool,
+not an internet-facing service.
+
 ## Build & release
 
-Builds are validated on every push and PR via GitHub Actions
-(`.github/workflows/build.yml`). Pushing a version tag (`v1.0.0`, `v1.0`)
-publishes the image to GHCR (`ghcr.io/<user>/re-toolbox`).
+Builds validated on every push and PR via GitHub Actions
+(`.github/workflows/build.yml`). Push a version tag (`v1.0.0`, `v1.0`) to
+publish the image to GHCR (`ghcr.io/<user>/re-toolbox`).
