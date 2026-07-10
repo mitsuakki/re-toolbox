@@ -1,12 +1,9 @@
 {
-  "_comment": "Single MCP entry point for Claude Desktop. The gateway composes all toolbox MCP servers (radare2, Ghidra, shell) behind one transport. Merge the 'toolbox' entry into your claude_desktop_config.json mcpServers block.",
+  "_comment": "Single MCP entry point via StreamableHTTP — no Docker socket needed.",
   "mcpServers": {
     "toolbox": {
-      "command": "docker",
-      "args": [
-        "exec", "-i", "toolbox",
-        "python3", "/opt/tools/scripts/mcp/gateway.py"
-      ]
+      "type": "http",
+      "url": "http://localhost:3100/mcp"
     }
   }
 }
