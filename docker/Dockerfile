@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 # ============================================================================
 # Stage 0: base — runtime OS packages only (no build toolchain)
 # Used by the final stage. Keeps image lean — no gcc/cmake/maven bloat.
